@@ -11,6 +11,10 @@ Give it a corridor, a weather series and a set of plants, and it answers: how mu
 and solar can this network carry before something binds, what binds first, and how much of
 that limit is physics rather than a conservative assumption about the weather.
 
+It also answers the question that decides whether a DLR business case survives contact
+with a network operator: **once the weather has given you more rating, how much of it are
+you actually allowed to use?**
+
 Quasi-static AC power flow at 15-minute resolution (pandapower), IEEE 738-2012 conductor
 heat balance, coordinated voltage control, a four-level constraint hierarchy and a
 minimal-curtailment search. Three line-rating modes share one thermal model, so a static
@@ -41,6 +45,15 @@ is relaxed — the same 80 °C is enforced against real cooling instead of assum
 For a network hosting wind this correlation works in your favour: the windy hours when the
 corridor is most congested are the hours the wind is cooling it hardest.
 
+**But the conductor is not the only thing in the circuit.** The current still has to pass
+through current transformers, disconnectors, terminations and jumper loops in the
+substation, none of which the wind cools, and the protection settings and clearance
+margins were all established against the static rating. Real schemes therefore cap the
+uplift — typically at 1.3 to 1.5 × static — and are frequently limited by a piece of
+switchgear rather than by the line. A study that rates the bare conductor and stops there
+will report an uplift nobody can use. This tool models both ceilings and records which one
+bound, every timestep. [How that changes the answer.](#what-you-are-allowed-to-use)
+
 The tool implements three rating modes from a single heat balance:
 
 | Mode | `--dlr` | Air temp | Irradiance | Wind | What it needs in practice |
@@ -50,14 +63,18 @@ The tool implements three rating modes from a single heat balance:
 | Full weather | `2` | measured | measured | measured, per-zone angle of attack | wind measurement or forecast |
 
 Mode 0 is not a separate model. It is the *same* heat balance evaluated at the reference
-conditions the static rating is declared for, and the code asserts it reproduces the
-declared rating to within 0.4 % — otherwise any apparent DLR headroom could just be two
-models disagreeing with each other.
+conditions the static rating is declared for, and the code checks it reproduces the
+declared rating to within 0.5 % — otherwise any apparent DLR headroom could just be two
+models disagreeing with each other. The declared 780 A is not an independent figure: it is
+what the model returns for a real DIN 48204 conductor at those conditions.
 
 ![Corridor rating against the current carried](docs/figures/rating.png)
 
-*Example output: the operative rating against the current the network is carrying. The gap
-between them is headroom a static rating cannot see.*
+*Example output. The dashed line is what the conductor heat balance alone allowed; the
+solid blue line is what the scheme was permitted to use once the cap and the substation
+equipment were applied. The gap between the blue line and the current carried is headroom
+a static rating cannot see; the gap above it is headroom the weather offered and the
+scheme could not take.*
 
 ---
 
@@ -82,17 +99,19 @@ solar plants through one congested export corridor to a stronger grid.
 ```
 
 The double line is the export corridor and the binding constraint: 33.7 km of single ACSR
-conductor, 800 A static rating, 152 MVA, against 330 MW of connected generation. It is
-split into two rating zones with different mean bearings, so the same wind gives each a
-different angle of attack.
+conductor (Al/St 340/30), 780 A static rating, 149 MVA, against 330 MW of connected
+generation. It is split into two rating zones with different mean bearings, so the same
+wind gives each a different angle of attack.
 
 Everything a distribution operator actually controls is in the model: the 110/20 kV
 on-load tap changers, an MV shunt reactor, plant reactive droop, the ±5 % voltage band and
 a contracted export cap at the interface. Full parameter tables in
 [docs/network.md](docs/network.md).
 
-All values are generic — public standards, typical datasheets and round design figures.
-Nothing is measured or operator-specific.
+All values are generic — public standards and published conductor and switchgear
+datasheets. The conductor is a real DIN 48204 type and the substation equipment ratings
+come from the IEC 62271 standard series, so the parameters can be checked rather than
+taken on trust. Nothing is measured or operator-specific.
 
 ---
 
@@ -103,34 +122,55 @@ git clone https://github.com/tubnguyen/dlr-hosting-capacity-sim
 cd dlr-hosting-capacity-sim
 pip install -e ".[dev]"
 
-# one scenario: full-weather DLR, all plants connected, storage on
-corridor-sim --preset dlr2_der4_bess --days 30
+# a three-day run, to see it work: full-weather DLR, all plants, storage on
+corridor-sim --preset dlr2_der4_bess --days 3
+```
 
-# the same network on a static rating, for comparison
-corridor-sim --preset static_der4 --days 30
+That prints a summary and writes a run directory in about a minute. Then the comparison
+the tool exists to make, and the full sweep:
+
+```bash
+# the same network and window on a static rating
+corridor-sim --preset static_der4 --days 3
 
 # the whole scenario matrix in parallel, plus a comparison table and figures
 python scripts/run_matrix.py --days 30 --jobs 8
 
-pytest -q
+pytest -q          # about four minutes
 ```
 
 Runs land in `runs/<scenario>/` (not committed — the per-step time series is large).
+
+**Expect it to take a while.** Every timestep is a sequence of AC power flows, and a step
+that has to curtail runs a bracketing search on top of that, so the scenarios that bind
+are the slow ones. Rough guide on one core:
+
+| Scenario | 1 day | 30 days | 1 year |
+|---|---|---|---|
+| Nothing binding (`dlr2_der4`) | ~20 s | ~10 min | ~2 h |
+| Curtailing heavily (`static_der4`) | ~2.5 min | ~75 min | ~15 h |
+
+`scripts/run_matrix.py --jobs N` runs scenarios in separate single-threaded processes, so
+the whole 21-scenario matrix costs about the slowest column rather than the sum.
 
 <details>
 <summary>Command-line options</summary>
 
 ```
---preset PRESET      named scenario (see the matrix below)
+--preset PRESET         named scenario (see the matrix below)
 --conductor {single,twin}
---dlr {0,1,2}        0 static, 1 ambient-adjusted, 2 full weather
+--dlr {0,1,2}           0 static, 1 ambient-adjusted, 2 full weather
+--dlr-cap-ratio R       ceiling on the dynamic rating, as a multiple of static
+--no-rating-cap         rate the bare conductor, with no administrative ceiling
+--no-equipment-limit    ignore the series substation equipment rating
 --control {droop,cosphi}
---der WF_1,WF_2,...  which plants to connect
---storage            enable the battery
---no-curtailment     record what would bind instead of acting on it
+--der WF_1,WF_2,...     which plants to connect
+--storage               enable the battery
+--no-curtailment        record what would bind instead of acting on it
 --export-cap MW
 --start YYYY-MM-DD --days N
---data-dir DIR       your own input time series
+--end YYYY-MM-DD        explicit end date; overrides --days
+--data-dir DIR          your own input time series
 --out DIR --label NAME --no-plots
 ```
 </details>
@@ -170,11 +210,22 @@ a zone are read as UTC; anything zoned is converted to UTC.
 Rules the loader enforces, rather than papering over:
 
 * **Any resolution finer or coarser than 15 minutes is fine.** Coarser series (hourly
-  weather, for instance) are interpolated in time onto the simulation grid.
-* **Coverage is checked.** If a file does not span the requested window the run stops. It
-  will not substitute zeros for missing weather and hand you a plausible-looking answer.
+  weather, for instance) are interpolated in time onto the simulation grid, and a gap
+  inside a file's span is interpolated too — a missing hour in an hourly series is not
+  distinguishable from a series that was six-hourly to begin with.
+* **Coverage is checked against each file's own first and last timestamp, before any
+  interpolation happens.** If a file does not span the requested window the run stops.
+  The order matters: filling first and testing for missing values afterwards reads like a
+  coverage check and is not one, because the fill leaves nothing to find and the run
+  proceeds on the last observed value held flat across the uncovered window. That is worse
+  than substituting zeros — zeros are visible, and a held edge value plots as an entirely
+  plausible calm spell.
 * **Duplicate timestamps are an error**, not a silent last-value-wins.
 * Missing columns raise by name, so a schema mistake surfaces immediately.
+
+Hourly inputs need to reach the closing midnight of the period you intend to simulate: the
+15-minute grid's last point is 23:45, and interpolation does not extend past the data. The
+shipped dataset does, so `--days 366` covers the whole leap year.
 
 Wind generation is **modelled from the weather**, not supplied: hub-height extrapolation by
 the shear exponent implied by your 10 m and 100 m fields, an air-density correction, a
@@ -198,7 +249,8 @@ change first:
 | Nominal voltages, frequency, time step | `V_HV_KV`, `V_MV_KV`, `F_HZ`, `DT_H` |
 | Voltage band | `V_MAX_PU`, `V_MIN_PU` |
 | Conductor: diameter, resistance, emissivity, design temperature | `COND_*`, `T_COND_MAX_C` |
-| Conductor build options and their static ratings | `CONDUCTOR_OPTIONS` |
+| Conductor build options, static ratings, series equipment ratings | `CONDUCTOR_OPTIONS` |
+| Ceiling on the dynamic rating | `DLR_CAP_RATIO` |
 | Corridor section lengths | `LEN_CORR_*` |
 | Rating zones and their mean bearings | `DLR_ZONE_AZIMUTH_DEG` |
 | Conductor height, terrain roughness, site elevation | `DLR_CONDUCTOR_HEIGHT_M`, `DLR_ROUGHNESS_M`, `DLR_SITE_ELEVATION_M` |
@@ -255,10 +307,10 @@ Each run writes to its own directory under `runs/`:
 
 | File | Contents |
 |---|---|
-| `*_timeseries.csv` | every solved quantity per 15-minute step: flows, voltages, ratings, conductor temperature, curtailment and its cause, tap and reactor positions, convergence and droop residual |
+| `*_timeseries.csv` | every solved quantity per 15-minute step: flows, voltages, the operative rating and what limited it, the uncapped heat balance beside it, conductor temperature, curtailment and its cause, committed tap and reactor operations, convergence and droop residual |
 | `*_violations.csv` | one row per violated interval, with level, asset and margin |
 | `*_seasonal.csv` | monthly breakdown — DLR value is strongly seasonal |
-| `*_metrics.json` | headline numbers: available, delivered and curtailed energy, rating statistics, hours over each limit, losses, convergence rates |
+| `*_metrics.json` | headline numbers: available, delivered and curtailed energy, the operative and uncapped ratings and how often a ceiling bound, hours over each limit, committed actuator operations, losses, convergence rates |
 | `*_summary.txt` | the same, printed for a human |
 | `figures/` | operative rating against carried current, voltage profile along the corridor, plus rating drivers under mode 2 and storage operation when the battery is on |
 
@@ -285,7 +337,54 @@ of attack is folded onto [0°, 90°]: wind along the line cools far less than wi
 Wind is brought from the 100 m reference field down to conductor height by a neutral-stability
 log law over a roughness length, with the geometry validated rather than assumed.
 
-![What drives the rating](docs/figures/rating_drivers.png)
+![The conductor heat balance against the ceilings that sit above it](docs/figures/rating_drivers.png)
+
+*Wind and temperature drive the conductor rating strongly and predictably — and on this
+corridor the whole relationship sits above both ceilings. The physics is real; most of it
+is unreachable.*
+
+### What you are allowed to use
+
+The heat balance rates the conductor. Two limits sit above it, and on this corridor one of
+them binds most of the time.
+
+| Ceiling | Why it exists | Single | Twin |
+|---|---|---|---|
+| Conductor heat balance | IEEE 738, from the weather | 860 – 2550 A | 1720 – 5100 A |
+| Administrative cap | protection settings, sag and clearance margins and the permit were all set against the static rating | 1170 A (1.5 ×) | 2340 A |
+| Series equipment | CTs, disconnectors, terminations and jumper loops are not cooled by the wind, and carry IEC 62271 standard ratings | 1250 A | 2000 A |
+
+(Heat-balance range over the shipped year.) The operative rating is the lowest of the
+three. On the single conductor the administrative cap binds first; on the twin bundle the
+conductor outruns its switchgear and the equipment binds instead — which is exactly the
+trap a reconductoring business case falls into.
+
+On this site a ceiling, not the weather, sets the rating **92 % of the year** for the
+single conductor and 98 % for the twin. The constraint is not the conductor.
+
+That has a consequence worth checking in any study, because it inverts the obvious
+conclusion. Once a ceiling binds most of the time, the expensive rating mode stops being
+worth much more than the cheap one: mode 2 needs a wind measurement or forecast, mode 1
+needs a thermometer, and if both spend most of the year pinned against the same cap they
+deliver nearly the same energy. Comparing modes without a ceiling in the model makes the
+wind measurement look far more valuable than it is — which is a procurement decision, not
+a modelling detail. Run your own numbers with `--dlr 1` against `--dlr 2` and look at
+`headroom_limited_pct` before costing a met mast.
+
+Both ceilings are configurable, and removing them reports what the conductor alone would
+have supported:
+
+```bash
+corridor-sim --dlr 2 --dlr-cap-ratio 1.3      # a more conservative scheme
+corridor-sim --dlr 2 --no-rating-cap          # cap removed, equipment still enforced
+corridor-sim --dlr 2 --no-rating-cap --no-equipment-limit   # the bare conductor
+```
+
+Every row records the uncapped heat balance (`rating_{zone}_weather_a`) beside the
+operative rating and names which ceiling bound (`rating_{zone}_binding`). Without both,
+*the weather did not allow more* and *the weather allowed more and we were not permitted
+to use it* collapse into one number — and they call for completely different responses,
+one for a bigger conductor and the other for a protection review or a switchgear swap.
 
 ### Coordinated voltage control
 
@@ -395,6 +494,11 @@ docs/              methodology, network description
 tests/             unit and end-to-end tests
 ```
 
+Every module is under 550 lines and readable top to bottom; the physics
+(`dlr.py`), the network (`network.py`) and the control stack (`controls.py`) are the three
+worth reading first.
+
+
 ---
 
 ## Verification
@@ -404,15 +508,24 @@ tests/             unit and end-to-end tests
 * forward and inverse IEEE 738 solves agree — the current a rating permits heats the
   conductor to exactly the temperature the rating assumed;
 * the model reproduces the declared static rating at its reference conditions;
+* the operative rating never exceeds any of its three ceilings, and removing them can
+  only ever increase delivered energy;
+* an input file that does not span the requested window stops the run, and the test
+  demonstrates the flat line the rejected path would otherwise have produced;
 * reactive power reported for a step matches what the solved network delivered;
+* the reactive guard fires on the sign the corridor actually exhibits;
+* reported tap operations are committed position changes, never control-loop writes;
 * a non-actionable under-voltage does not mask a coincident thermal overload;
 * the applied curtailment clears the violation and a meaningfully smaller cut does not;
 * storage round-trip energy matches the stated efficiency, and clamped power matches the
   actual state-of-charge change;
-* delivered plus curtailed energy equals available energy, every interval.
+* delivered plus curtailed energy equals available energy, every interval;
+* the matrix runner survives a `runs/` directory containing anything the CLI produced;
+* validation still rejects a bad configuration under `python -O`.
 
-CI runs the suite on Python 3.11 and 3.12, plus a one-day smoke run of the CLI and the
-matrix runner.
+CI runs the suite on Python 3.10 through 3.13, a one-day smoke run of the CLI and the
+matrix runner in the order the quickstart uses them, and a check that the shipped
+dataset regenerates byte-for-byte from its seed.
 
 ---
 
@@ -422,7 +535,12 @@ Quasi-static and intact-network: no contingency analysis, no protection or stabi
 no sag and clearance calculation — the design conductor temperature stands in for the
 clearance limit that governs a real line. One weather point represents the corridor, and
 each rating zone carries a single mean bearing, so a per-span rating would come out lower
-than a zone-mean one. Full list in [docs/methodology.md](docs/methodology.md#6-what-is-deliberately-not-modelled).
+than a zone-mean one. The series equipment is one lumped current rating rather than a
+modelled set of assets, and the administrative cap is a fixed multiple rather than the
+forecast-confidence-dependent limit a real scheme would use. This is a planning study: it
+assumes the weather it is given, and says nothing about sensor validation, fallback
+ratings or the latency between measurement and dispatch that a deployed scheme needs.
+Full list in [docs/methodology.md](docs/methodology.md#7-what-is-deliberately-not-modelled).
 
 The shipped dataset describes a cold, windy, high-latitude site, which is where dynamic
 line rating has most to offer. DLR value is strongly seasonal — every run writes a monthly

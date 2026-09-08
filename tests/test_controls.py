@@ -10,6 +10,7 @@ from corridor_sim.controls import (
     droop_reference,
     measurement_bus,
     reactive_import_mvar,
+    reactor_step,
     regulate,
     release_reactors,
     solve,
@@ -200,3 +201,44 @@ def test_committed_operations_never_exceed_control_loop_writes(solved, cfg, reac
     assert result["oltc_net_moves"] <= result["oltc_moves_a"] + result["oltc_moves_b"]
     assert result["reactor_net_moves"] <= result["reactor_moves"]
     assert result["oltc_net_moves"] >= 0 and result["reactor_net_moves"] >= 0
+
+
+def test_the_guard_holds_the_reactors_down_instead_of_fighting_the_voltage_loop(solved):
+    """Two loops, one actuator, opposite directions.
+
+    The voltage loop raises absorption to trim the MV busbar; the guard drops it
+    to cut import at the interface. The reactor bank is a few megavars against
+    an import of tens, so the guard's threshold is not reachable by reactor
+    action and it fires every interval. Without a hold-down the reactor walks up
+    and down forever and reports an operation count no stepped reactor could
+    survive.
+    """
+    net, idx = solved
+    state = dict.fromkeys(idx.reactors, 2)
+    for name in idx.reactors:                      # MV voltage high enough to want a raise
+        net.shunt.at[idx.shunts[name], "q_mvar"] = C.REACTOR_STEPS_MVAR[state[name]]
+    assert solve(net, "results")
+
+    raised, _ = reactor_step(net, idx, state, MoveBudget(C.REACTOR_MOVE_BUDGET),
+                             allow_raise=True)
+    held, after = reactor_step(net, idx, state, MoveBudget(C.REACTOR_MOVE_BUDGET),
+                               allow_raise=False)
+    assert all(after[n] <= state[n] for n in idx.reactors), "hold-down must never raise"
+    if raised:
+        assert not held or any(after[n] < state[n] for n in idx.reactors)
+
+
+def test_hold_down_still_permits_a_release(solved):
+    """Falling is the whole point; only rising is blocked."""
+    net, idx = solved
+    for unit in ("WF_1", "WF_2", "WF_3", "PV_1"):
+        net.sgen.at[idx.sgens[unit], "p_mw"] = 0.75 * C.DER_RATING_MW[unit]
+        net.sgen.at[idx.sgens[unit], "q_mvar"] = 0.0
+    assert solve(net, "dc", deep=True)
+    state = dict.fromkeys(idx.reactors, len(C.REACTOR_STEPS_MVAR) - 1)
+    for name in idx.reactors:
+        net.shunt.at[idx.shunts[name], "q_mvar"] = C.REACTOR_STEPS_MVAR[state[name]]
+    assert solve(net, "results")
+    _, after = reactor_step(net, idx, state, MoveBudget(C.REACTOR_MOVE_BUDGET),
+                            allow_raise=False)
+    assert all(after[n] <= state[n] for n in idx.reactors)

@@ -36,19 +36,57 @@ bearings 110° and 95°.
 
 ### Corridor conductor
 
-ACSR of roughly 305 mm² aluminium over 39 mm² steel, 24 mm outside diameter,
-80 °C design temperature.
+Al/St 340/30 to DIN 48204: 339 mm² aluminium over 30 mm² steel, 25.0 mm outside
+diameter, 0.0851 Ω/km DC at 20 °C, 80 °C design temperature. Datasheet values,
+so the conductor description and the numbers used are the same conductor and
+both can be checked against a published table.
 
 | | Single | Twin bundle |
 |---|---|---|
-| Resistance at 50 °C | 0.0897 Ω/km | 0.0448 Ω/km |
+| AC resistance at 50 °C | 0.0973 Ω/km | 0.0486 Ω/km |
 | Reactance | 0.400 Ω/km | 0.290 Ω/km |
 | Capacitance | 9.2 nF/km | 12.6 nF/km |
-| Static rating | 800 A | 1600 A |
-| Corridor capability | 152 MVA | 305 MVA |
+| Static rating | 780 A | 1560 A |
+| Corridor capability | 149 MVA | 297 MVA |
+| Administrative rating cap (1.5 ×) | 1170 A | 2340 A |
+| Series equipment rating | 1250 A | 2000 A |
+
+Resistance is AC, not DC: skin effect at 50 Hz raises the effective value by
+about 2 % on a conductor this size, and because ampacity goes as 1/√R, ignoring
+it overstates the rating by roughly 1 %.
+
+The static rating is not an independent figure. It is what the IEEE 738 model
+returns at the reference conditions the rating is declared for, which is what
+makes the static and dynamic modes the same physics rather than two models.
 
 Against a 330 MW fleet, the single conductor is the binding constraint by more
 than a factor of two — which is the point of the study.
+
+### What limits the corridor besides the conductor
+
+The heat balance rates the conductor. Two limits sit above it, and on this
+corridor one of them binds most of the time.
+
+**The administrative cap.** A dynamic rating is granted against protection
+settings, sag and clearance margins and a permit that were all established for
+the static rating. Operators therefore cap the uplift at a fixed multiple
+rather than following the heat balance wherever the weather takes it. Published
+deployments sit around 1.3 to 1.5; 1.5 is used here and is configurable
+(`--dlr-cap-ratio`, or `--no-rating-cap` to rate the bare conductor).
+
+**The series equipment.** Current reaching the line passes through current
+transformers, disconnectors, terminations and jumper loops in the substation.
+None of it is cooled by the wind, and all of it carries its own nameplate from
+the IEC 62271 standard rating series — 630, 800, 1250, 1600, 2000, 2500,
+3150 A — so it steps rather than tracking the conductor. A line rated 780 A is
+normally built with 1250 A plant. In practice this is what stops a DLR scheme
+before the conductor does, and it is the most common reason a study's headline
+uplift is not realisable.
+
+Which of the three ceilings bound is recorded per zone and per timestep
+(`rating_{zone}_binding`), because *the weather did not allow more* and *the
+weather allowed more and we were not permitted to use it* are different study
+results with different remedies.
 
 ### Generation
 
@@ -87,6 +125,7 @@ gives the single-unit outage case.
 | Voltage band | 0.95 – 1.05 pu |
 | Export cap at the interface | 250 MW |
 | Reactive exchange window | ±33 MVAr (10 % of installed capacity) |
+| Reactive import guard (releases the reactors) | 20 MVAr |
 | External grid Thevenin impedance | 2.0 + j10.0 Ω |
 | MV tap-changer setpoint | 20.5 kV |
 | Shunt reactor | 11 steps, 0.50 – 3.00 MVAr |

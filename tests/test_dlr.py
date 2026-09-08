@@ -181,6 +181,22 @@ def test_inverse_solve_flags_saturation_instead_of_returning_the_ceiling():
     assert not dlr.conductor_temperature_saturated(normal)
 
 
+def test_current_at_its_own_rating_reports_the_design_temperature_exactly():
+    """A solver artefact must not be reported as an exceedance.
+
+    The inverse solve is a bisection, so its tolerance lands directly on the one
+    metric a rating study exists to keep at zero: a current sitting exactly on
+    its own rating has to come back at the design temperature, not a fraction
+    above it.
+    """
+    for t_air, wind, phi, ghi in [(10.0, 2.0, 90.0, 0.0), (-12.0, 9.0, 85.0, 0.0),
+                                  (25.0, 0.6, 45.0, 800.0), (0.0, 4.0, 30.0, 200.0)]:
+        current, _ = dlr.ampacity(t_air, wind, phi, ghi, t_cond_max_c=C.T_COND_MAX_C)
+        reached = dlr.conductor_temperature(current, t_air, wind, phi, ghi)
+        assert reached <= C.T_COND_MAX_C + 1e-3, (t_air, wind, reached)
+        assert reached == pytest.approx(C.T_COND_MAX_C, abs=1e-3)
+
+
 def test_ac_resistance_exceeds_dc():
     """Skin effect is modelled; ignoring it overstates ampacity."""
     assert C.COND_AC_DC_RATIO > 1.0

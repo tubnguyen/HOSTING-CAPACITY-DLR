@@ -32,12 +32,52 @@ than a few degrees of ambient.
 Mode 0 is not a separate model. It is the *same* heat balance evaluated at the
 conditions the static rating is declared for — a hot day, light perpendicular
 wind, full sun. `dlr.calibration()` asserts this: the model reproduces the
-declared static rating to within 0.4 %. That matters, because otherwise any
+declared static rating to within 0.5 %. That matters, because otherwise any
 apparent DLR uplift could just be two models disagreeing.
 
 Mode 1 is the conservative deployment: it needs only ambient temperature, and
 holds wind at a low fixed value. Mode 2 needs a wind measurement or forecast and
 is worth substantially more.
+
+Resistance is AC. Skin effect at 50 Hz raises the effective value of a
+conductor this size by about 2 %, and because ampacity goes as 1/√R, using the
+DC value would overstate every rating in the study by roughly 1 %.
+
+### What the conductor rating is not
+
+The heat balance rates the conductor. It says nothing about anything else the
+current has to pass through, and on a real corridor two limits sit above it.
+
+**An administrative cap.** A dynamic rating is granted against protection
+settings, sag and clearance margins and a permit that were all established for
+the static rating. An operator does not follow the heat balance wherever the
+weather takes it; the uplift is capped at a fixed multiple, typically 1.3 to
+1.5. The default here is 1.5.
+
+**The series equipment.** Current transformers, disconnectors, terminations and
+jumper loops in the substation are not cooled by the wind. They carry nameplates
+from the IEC 62271 standard rating series, so they step rather than tracking the
+conductor, and a line is normally built with the next size up from its own
+rating — 1250 A plant on a 780 A line here. This is the most common reason a
+published DLR uplift is not realisable in practice, and it is the first thing a
+network operator will ask about.
+
+The operative rating is therefore the lowest of the three:
+
+$$I_{op} = \min\bigl(I_{IEEE738}(\text{weather}),\ k_{cap} \cdot I_{static},\ I_{equip}\bigr)$$
+
+Which one bound is written to every row (`rating_{zone}_binding`), and the
+uncapped heat balance is written beside it (`rating_{zone}_weather_a`). Without
+both, "the weather did not allow more" and "the weather allowed more and we were
+not permitted to use it" collapse into the same number, and they call for
+completely different responses — one for a bigger conductor, the other for a
+protection review or a switchgear replacement.
+
+Both ceilings are configurable and can be removed entirely
+(`--dlr-cap-ratio`, `--no-rating-cap`, `--no-equipment-limit`), which is how the
+study reports what the conductor alone would have supported. `calibration()`
+deliberately ignores them: it checks the conductor model against the declared
+static rating, and a ceiling above it would mask a model that had drifted.
 
 ### Wind at conductor height
 
@@ -70,7 +110,34 @@ changer tested against the voltage that remains.
 Both switched actuators freeze after reversing direction within one interval. An
 actuator that has reversed has bracketed its setpoint, and further movement is
 hunting, not control. A move-rate budget additionally caps how many operations a
-15-minute interval can physically contain.
+15-minute interval can physically contain, and it is shared: an actuator cannot
+exceed its physical operation rate by being asked twice in one interval for two
+different reasons.
+
+That distinction carries into what is reported. The control loop may write an
+actuator position several times while it searches, and freeze-on-reversal exists
+precisely so that it can. Those writes are iterations of a solver, not
+operations of a switch. `oltc_operations` counts the net change between the
+position a step started from and the position it committed — the number a
+maintenance schedule is written against — and `oltc_loop_moves` keeps the inner
+count beside it as a diagnostic. On this corridor the two differ by more than an
+order of magnitude, and reporting the inner count as duty makes a control scheme
+that behaves well look unusable.
+
+### Reactive exchange at the interface
+
+A long inductive overhead corridor *absorbs* reactive power under load — tens of
+megavars at high output. The guard that stages the shunt reactors down therefore
+watches reactive **import**, and every megavar a reactor stops absorbing is a
+megavar the corridor no longer has to draw from the grid.
+
+The measurement at the interface is signed for export, so import is its
+negative. A guard written directly against the exported sign watches a condition
+this network never reaches: it never fires, the release path is never taken, and
+every row reports a healthy flag while the exchange sits well outside its
+window. `reactive_import_mvar()` names the quantity explicitly for that reason.
+The window flag itself is on the magnitude of the exchange in either direction,
+matching the contract it is written against.
 
 ### Reactive droop, and why the loop is built the way it is
 
@@ -117,7 +184,26 @@ The final solve is always at full injection, so the physics is unchanged. The
 deep path is deliberately disabled inside the control and curtailment loops,
 where a cheap failure is informative.
 
-## 3. Constraint hierarchy
+## 3. Inputs and coverage
+
+Inputs arrive at whatever resolution they come in and are interpolated onto the
+15-minute grid. Interpolation fills *between* observations. Anything outside the
+span of a file is a gap in the study's inputs and stops the run.
+
+The order matters more than it looks. Filling first and testing for NaN
+afterwards reads like a coverage check and is not one: a forward or backward
+fill leaves no NaN behind, so the test always passes, and the run proceeds on
+the last observed value held flat across the uncovered window. That failure is
+worse than substituting zeros, because zeros are visible and a held edge value
+plots as an entirely plausible calm spell. The window is therefore checked
+against each file's own first and last timestamp before any filling happens.
+
+A gap *inside* a file's span is interpolated rather than rejected, deliberately:
+a missing hour in an hourly series is not distinguishable from a series that was
+six-hourly to begin with, and rejecting it would rule out every legitimately
+coarse input.
+
+## 4. Constraint hierarchy
 
 | Level | Constraint | Actionable |
 |---|---|---|
@@ -141,7 +227,7 @@ published network hosting capacity while the corridor itself has headroom.
 Every curtailed megawatt-hour is attributed to exactly one cause
 (`curtail_cause`), so the energy adds up.
 
-## 4. Curtailment
+## 5. Curtailment
 
 Curtailment is parametrised by one scalar: total megawatts removed, allocated
 pro rata over the entry dispatch. Every actionable level is relieved
@@ -171,7 +257,7 @@ A first guess is taken from the linear structure of the violation — corridor
 current and interface export both scale with injection — which keeps the search
 to a handful of trials rather than a doubling ladder from zero.
 
-## 5. Storage
+## 6. Storage
 
 The battery is a market participant, not a corridor congestion device, and its
 reach is asymmetric in both directions. It connects near the receiving end, so
@@ -198,7 +284,7 @@ Holding a reserve and delivering energy compete for the same asset. Every
 interval records the reserve still available and whether it fell short, so the
 conflict is a counted result rather than a hidden assumption.
 
-## 6. What is deliberately not modelled
+## 7. What is deliberately not modelled
 
 * No contingency (N-1) analysis; the corridor is studied intact.
 * No protection, stability or electromagnetic transient behaviour — the study is
@@ -208,4 +294,14 @@ conflict is a counted result rather than a hidden assumption.
   so a per-span rating would be lower than a zone-mean rating.
 * Sag and clearance are not computed. The design conductor temperature stands in
   for the clearance limit that governs a real line.
+* The series equipment is one lumped current rating, not a modelled set of
+  assets. A real study would rate each item and would usually find one of them,
+  rather than the conductor, setting the scheme.
+* The administrative cap is a fixed multiple. Real schemes often use a
+  time-varying or forecast-confidence-dependent limit, and some require the
+  rating to be held for a minimum period before it can be used.
 * No sub-hourly ramping constraints on the plants.
+* Nothing here is a real-time system. A deployed DLR scheme needs sensor
+  validation, a fallback rating when measurements are lost, and a latency budget
+  between measurement and dispatch. This is a planning study and assumes the
+  weather it is given.

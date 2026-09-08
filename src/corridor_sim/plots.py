@@ -57,15 +57,17 @@ def _legend_below(ax, ncols=3, pad=0.16):
               handlelength=1.6, columnspacing=1.6, borderaxespad=0.0)
 
 
-def _reference(ax, value, label, inside=False):
+def _reference(ax, value, label, inside=False, x=0.01):
     """Muted dashed limit line, labelled clear of the data.
 
     The label sits in the right margin by default; `inside` puts it above the
     line at the left, for axes that already have something in that margin.
+    `x` staggers labels horizontally when two limits sit close enough together
+    that their text would otherwise collide.
     """
     ax.axhline(value, color=MUTED, lw=1.2, ls=(0, (4, 3)), zorder=1)
     if inside:
-        ax.annotate(label, xy=(0.01, value), xycoords=("axes fraction", "data"),
+        ax.annotate(label, xy=(x, value), xycoords=("axes fraction", "data"),
                     ha="left", va="bottom", fontsize=8.5, color=INK_2,
                     xytext=(0, 4), textcoords="offset points")
     else:
@@ -175,19 +177,38 @@ def curtailment_matrix(table: pd.DataFrame, path: Path):
     plt.close(fig)
 
 
-def rating_vs_weather(result: pd.DataFrame, path: Path, static_rating_a: float):
-    """What actually drives the rating: wind speed, shaded by air temperature."""
+def rating_vs_weather(cfg, result: pd.DataFrame, path: Path):
+    """What drives the conductor rating, and where the scheme stops using it.
+
+    Plots the heat balance rather than the operative rating. Once a ceiling
+    binds, the operative rating is a horizontal line and a scatter of it against
+    wind speed says nothing at all - the physics is still there, it is just no
+    longer what sets the limit. Drawing the ceilings over the physics shows both
+    the relationship and how much of it is reachable.
+    """
     _style()
-    ok = result[result["converged"]].dropna(subset=["wind_Z1_ms", "rating_Z1_a"])
+    column = ("rating_Z1_weather_a" if "rating_Z1_weather_a" in result.columns
+              else "rating_Z1_a")
+    ok = result[result["converged"]].dropna(subset=["wind_Z1_ms", column])
     fig, ax = plt.subplots(figsize=(7.6, 4.4))
-    scatter = ax.scatter(ok["wind_Z1_ms"], ok["rating_Z1_a"], c=ok["t_air_c"],
+    scatter = ax.scatter(ok["wind_Z1_ms"], ok[column], c=ok["t_air_c"],
                          cmap=SEQUENTIAL, s=9, alpha=0.55, linewidths=0)
-    _reference(ax, static_rating_a, f"Static rating {static_rating_a:.0f} A", inside=True)
+    # Staggered: the cap and the equipment rating sit close together by design,
+    # and stacked labels at the same x would overlap.
+    _reference(ax, cfg.static_rating_a, f"Static {cfg.static_rating_a:.0f} A", inside=True)
+    if cfg.rating_cap_a is not None:
+        _reference(ax, cfg.rating_cap_a, f"Cap {cfg.rating_cap_a:.0f} A", inside=True)
+    if cfg.equipment_rating_a is not None:
+        _reference(ax, cfg.equipment_rating_a,
+                   f"Series equipment {cfg.equipment_rating_a:.0f} A",
+                   inside=True, x=0.30)
     bar = fig.colorbar(scatter, ax=ax, pad=0.02)
     bar.set_label("Air temperature (°C)", color=INK_2)
     bar.outline.set_visible(False)
-    _clean(ax, "Operative rating (A)", "Rating against wind speed at conductor height",
-           "Wind speed (m/s)")
+    _clean(ax, "Conductor heat balance (A)",
+           "What the weather allows, against what the scheme may use",
+           "Wind speed at conductor height (m/s)")
+    ax.set_ylim(0, None)
     fig.tight_layout()
     fig.savefig(path, bbox_inches="tight")
     plt.close(fig)
@@ -255,8 +276,7 @@ def run_figures(cfg, result: pd.DataFrame, out_dir: Path) -> list:
     voltage_profile(result, out_dir / f"{cfg.stem}_voltage.png")
     made.append(out_dir / f"{cfg.stem}_voltage.png")
     if cfg.dlr_mode == 2:
-        rating_vs_weather(result, out_dir / f"{cfg.stem}_rating_drivers.png",
-                          cfg.static_rating_a)
+        rating_vs_weather(cfg, result, out_dir / f"{cfg.stem}_rating_drivers.png")
         made.append(out_dir / f"{cfg.stem}_rating_drivers.png")
     if cfg.storage_enabled:
         storage_operation(cfg, result, out_dir / f"{cfg.stem}_storage.png")

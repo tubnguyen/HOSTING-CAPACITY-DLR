@@ -210,8 +210,21 @@ def oltc_step(net, idx, trafos, bus_name, budget: MoveBudget):
     return moved, {n: int(net.trafo.at[idx.trafos[n], "tap_pos"]) for n in trafos}
 
 
-def reactor_step(net, idx, state: dict, budget: MoveBudget):
-    """One step of the MV shunt reactors: more absorption lowers voltage."""
+def reactor_step(net, idx, state: dict, budget: MoveBudget, allow_raise: bool = True):
+    """One step of the MV shunt reactors: more absorption lowers voltage.
+
+    `allow_raise=False` lets the reactors fall but not rise. It is set while the
+    reactive import guard is active, because the two loops otherwise pull in
+    opposite directions on the same actuator every interval: the voltage loop
+    raises absorption to trim 0.18 kV at the MV busbar, the guard drops it again
+    to reduce import at the interface, and the reactor walks up and down without
+    ever settling. The interface obligation is the firmer of the two and wins.
+
+    It matters here because the actuator cannot resolve the conflict on its own.
+    The reactor bank totals a few megavars against an import of tens, so the
+    guard's threshold is not reachable by reactor action; without the hold-down
+    it simply fires forever.
+    """
     high = (C.V_MV_KV + C.REACTOR_DEADBAND_KV) / C.V_MV_KV
     low = (C.V_MV_KV - C.REACTOR_DEADBAND_KV) / C.V_MV_KV
     new = dict(state)
@@ -222,7 +235,7 @@ def reactor_step(net, idx, state: dict, budget: MoveBudget):
             continue
         v = float(net.res_bus.at[idx.buses[bus], "vm_pu"])
         step = new.get(name, C.REACTOR_STEP_INIT)
-        if v > high and step < len(C.REACTOR_STEPS_MVAR) - 1:
+        if allow_raise and v > high and step < len(C.REACTOR_STEPS_MVAR) - 1:
             step += 1
             budget.record(name, 1)
             moved = True
@@ -516,7 +529,9 @@ def regulate(net, cfg, idx, dispatch: dict, reactor_state: dict, warm_start=True
         # network never had, and the stale reactor state would carry into the
         # next timestep.
         state_before = dict(state)
-        reactor_moved, state = reactor_step(net, idx, state, reactor_budget)
+        reactor_moved, state = reactor_step(
+            net, idx, state, reactor_budget,
+            allow_raise=reactive_import_mvar(net, idx.buses) <= C.Q_GUARD_MVAR)
         if reactor_moved and not solve(net, "results"):
             state = _rollback(net, last_good, state_before)
             taps_a, taps_b = _read_taps(net, idx)

@@ -140,13 +140,18 @@ def conductor_temperature(current_a, t_air_c, v_ms, phi_deg, irradiance_wm2,
         return lo
     if imbalance(hi) > 0.0:
         return hi                       # saturated: see the helper below
-    for _ in range(60):
+    # Tolerance well below the reporting resolution. At 0.1 C a current sitting
+    # exactly on its own rating can return 80.02 C, which the design-temperature
+    # check then counts as an exceedance - a solver artefact reported as the one
+    # number a rating study exists to keep at zero. Bisection is cheap; the
+    # extra iterations cost nothing next to the power flow.
+    for _ in range(80):
         mid = 0.5 * (lo + hi)
         if imbalance(mid) > 0.0:
             lo = mid
         else:
             hi = mid
-        if hi - lo < 0.1:
+        if hi - lo < 1e-4:
             break
     return 0.5 * (lo + hi)
 
