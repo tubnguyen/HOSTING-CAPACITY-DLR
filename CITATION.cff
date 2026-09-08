@@ -1,0 +1,24 @@
+cff-version: 1.2.0
+title: DLR Hosting Capacity Simulator
+message: If you use this software, please cite it as below.
+type: software
+authors:
+  - family-names: Nguyen
+    given-names: Tu
+repository-code: https://github.com/tubnguyen/dlr-hosting-capacity-sim
+abstract: >-
+  Quasi-static AC power-flow simulator for hosting-capacity studies on a
+  110 kV distribution corridor with dynamic line rating in the loop.
+  Implements the IEEE 738-2012 conductor heat balance in both directions,
+  three line-rating modes sharing one thermal model, coordinated voltage
+  control, a four-level constraint hierarchy and a minimal-curtailment
+  search.
+keywords:
+  - dynamic line rating
+  - hosting capacity
+  - distribution network
+  - power flow
+  - IEEE 738
+  - pandapower
+license: MIT
+version: 2.0.0

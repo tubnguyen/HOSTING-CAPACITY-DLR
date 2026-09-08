@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import math
 
+import pandas as pd
 import pytest
 
 from corridor_sim import constants as C
@@ -96,3 +97,92 @@ def test_static_mode_ignores_weather():
     assert source == "static"
     assert all(v == cfg.static_rating_a for v in limits.values())
     assert all(math.isnan(diag[z]["qc_wm"]) for z in limits)
+
+
+def test_declared_static_rating_matches_the_conductor_datasheet():
+    """The static rating is derived, not asserted: it is what the model returns
+    at the conditions it is declared for, for a real published conductor."""
+    assert C.COND_R20_OHM_PER_KM == pytest.approx(0.0851)   # Al/St 340/30, DIN 48204
+    assert C.COND_DIAMETER_M == pytest.approx(0.025)
+    assert build_config(conductor="single").static_rating_a == 780.0
+
+
+# ── Ceilings above the heat balance ──────────────────────────────────────────
+def _cold_windy_row():
+    return pd.Series({"t_air_c": -12.0, "ghi_wm2": 0.0, "wind_ms": 11.0,
+                      "phi_Z1_deg": 88.0, "phi_Z2_deg": 74.0})
+
+
+def test_weather_alone_would_exceed_what_the_scheme_may_use():
+    """The premise of the cap: the conductor is not the binding element."""
+    cfg = build_config("dlr2_der4")
+    operative, terms = dlr.rating(cfg, _cold_windy_row(), "Z1")
+    assert terms["weather_a"] > cfg.static_rating_a * 2.0
+    assert operative < terms["weather_a"]
+
+
+@pytest.mark.parametrize("kwargs,expected", [
+    ({}, "cap"),                                   # 1.5x static binds first
+    ({"dlr_cap_ratio": None}, "equipment"),        # then the substation plant
+    ({"conductor": "twin"}, "equipment"),          # twin outruns its switchgear
+    ({"dlr_cap_ratio": None, "equipment_limit": False}, "weather"),
+])
+def test_the_binding_ceiling_is_recorded(kwargs, expected):
+    """Which limit bound is a study result, not an implementation detail."""
+    cfg = build_config("dlr2_der4", **kwargs)
+    _, terms = dlr.rating(cfg, _cold_windy_row(), "Z1")
+    assert terms["binding"] == expected
+
+
+def test_operative_rating_is_the_lowest_ceiling():
+    cfg = build_config("dlr2_der4")
+    operative, terms = dlr.rating(cfg, _cold_windy_row(), "Z1")
+    assert operative == pytest.approx(
+        min(terms["weather_a"], cfg.rating_cap_a, cfg.equipment_rating_a))
+
+
+def test_a_cap_never_derates_below_the_static_rating():
+    """Switching DLR on must not make the line worse than leaving it off."""
+    row = pd.Series({"t_air_c": 35.0, "ghi_wm2": 1000.0, "wind_ms": 0.3,
+                     "phi_Z1_deg": 5.0, "phi_Z2_deg": 5.0})
+    for name in ("dlr1_der4", "dlr2_der4"):
+        cfg = build_config(name)
+        assert cfg.rating_cap_a >= cfg.static_rating_a
+        operative, terms = dlr.rating(cfg, row, "Z1")
+        # Adverse weather may still derate below static - that is real physics -
+        # but it must be the weather doing it, never the ceiling.
+        if operative < cfg.static_rating_a:
+            assert terms["binding"] == "weather"
+
+
+def test_static_mode_is_untouched_by_the_ceilings():
+    """Mode 0 is already at nameplate, so nothing above it can bind."""
+    cfg = build_config("static_der4")
+    limits, diag, source = dlr.operative_limits(cfg, None, None)
+    assert source == "static"
+    assert all(v == cfg.static_rating_a for v in limits.values())
+    assert all(diag[z]["binding"] == "static" for z in limits)
+
+
+def test_calibration_ignores_the_ceilings():
+    """Calibration checks the conductor model; a cap would mask a drifted one."""
+    capped = dlr.calibration(build_config("dlr2_der4"))
+    bare = dlr.calibration(build_config("dlr2_der4", dlr_cap_ratio=None,
+                                        equipment_limit=False))
+    assert capped == bare
+    assert abs(capped["deviation_pct"]) < 0.5
+
+
+def test_inverse_solve_flags_saturation_instead_of_returning_the_ceiling():
+    """A returned 150 C must be distinguishable from a solved 150 C."""
+    hot = dlr.conductor_temperature(20000.0, 30.0, 0.2, 0.0, 1000.0)
+    assert dlr.conductor_temperature_saturated(hot)
+    normal = dlr.conductor_temperature(600.0, 10.0, 3.0, 90.0, 0.0)
+    assert not dlr.conductor_temperature_saturated(normal)
+
+
+def test_ac_resistance_exceeds_dc():
+    """Skin effect is modelled; ignoring it overstates ampacity."""
+    assert C.COND_AC_DC_RATIO > 1.0
+    r_ac = C.conductor_resistance(20.0)
+    assert r_ac == pytest.approx(C.COND_R20_OHM_PER_KM * 1e-3 * C.COND_AC_DC_RATIO)

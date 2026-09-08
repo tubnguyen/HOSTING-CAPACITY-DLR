@@ -4,7 +4,16 @@ from __future__ import annotations
 import pytest
 
 from corridor_sim import constants as C
-from corridor_sim.controls import MoveBudget, droop_reference, measurement_bus, regulate, solve
+from corridor_sim.constraints import measure_pcc_export
+from corridor_sim.controls import (
+    MoveBudget,
+    droop_reference,
+    measurement_bus,
+    reactive_import_mvar,
+    regulate,
+    release_reactors,
+    solve,
+)
 
 Q_LIMIT = 30.0
 P_RATED = 90.0
@@ -104,3 +113,90 @@ def test_regulation_always_leaves_a_solved_network(solved, cfg, reactor_state):
 def test_solve_reports_failure_without_the_deep_path(solved):
     net, _ = solved
     assert solve(net, "results")
+
+
+# ── Reactive exchange at the interface ───────────────────────────────────────
+def test_import_is_the_negative_of_export(solved):
+    """The guard watches import; the measurement is signed for export.
+
+    Getting this backwards is invisible: the guard simply never fires, every
+    row reports a healthy flag, and the reactive exchange it was written to
+    catch goes unremarked.
+    """
+    net, idx = solved
+    exported = measure_pcc_export(net, idx.buses)["q_mvar"]
+    assert reactive_import_mvar(net, idx.buses) == pytest.approx(-exported)
+
+
+def test_a_loaded_corridor_imports_reactive_power(solved):
+    """A long inductive overhead line absorbs megavars under load.
+
+    This is the sign the guard actually has to handle - not a hypothetical.
+    """
+    net, idx = solved
+    for unit in ("WF_1", "WF_2", "WF_3", "PV_1"):
+        net.sgen.at[idx.sgens[unit], "p_mw"] = 0.75 * C.DER_RATING_MW[unit]
+        net.sgen.at[idx.sgens[unit], "q_mvar"] = 0.0
+    assert solve(net, "dc", deep=True)
+    assert reactive_import_mvar(net, idx.buses) > 0.0
+
+
+def test_the_guard_fires_on_the_sign_that_actually_occurs(solved, cfg, reactor_state):
+    """Heavy import must reach the release path and step the reactors down."""
+    net, idx = solved
+    for unit in ("WF_1", "WF_2", "WF_3", "PV_1"):
+        net.sgen.at[idx.sgens[unit], "p_mw"] = 0.75 * C.DER_RATING_MW[unit]
+        net.sgen.at[idx.sgens[unit], "q_mvar"] = 0.0
+    assert solve(net, "dc", deep=True)
+    assert reactive_import_mvar(net, idx.buses) > C.Q_GUARD_MVAR, "expected heavy import"
+
+    dispatch = {u: float(net.sgen.at[idx.sgens[u], "p_mw"])
+                for u in ("WF_1", "WF_2", "WF_3", "PV_1")}
+    result = regulate(net, cfg, idx, dispatch, reactor_state, warm_start=False)
+    assert result["ok"]
+    assert result["reactor_flag"] == "released"
+
+
+def test_releasing_reactors_reduces_absorption(solved):
+    """Every megavar a reactor stops absorbing is one less to import."""
+    net, idx = solved
+    state = dict.fromkeys(idx.reactors, C.REACTOR_STEP_INIT)
+    for name in idx.reactors:
+        net.shunt.at[idx.shunts[name], "q_mvar"] = C.REACTOR_STEPS_MVAR[state[name]]
+    assert solve(net, "results")
+    before = sum(float(net.shunt.at[idx.shunts[n], "q_mvar"]) for n in idx.reactors)
+
+    new_state, released = release_reactors(net, idx, state, MoveBudget(C.REACTOR_MOVE_BUDGET))
+    after = sum(float(net.shunt.at[idx.shunts[n], "q_mvar"]) for n in idx.reactors)
+    if released:
+        assert after < before
+        assert all(new_state[n] <= state[n] for n in idx.reactors)
+
+
+def test_release_respects_the_shared_move_budget(solved):
+    """An actuator cannot exceed its operation rate by being asked twice."""
+    net, idx = solved
+    state = dict.fromkeys(idx.reactors, C.REACTOR_STEP_INIT)
+    spent = MoveBudget(C.REACTOR_MOVE_BUDGET)
+    for name in idx.reactors:                       # budget already exhausted
+        for _ in range(C.REACTOR_MOVE_BUDGET):
+            spent.record(name, 1)
+    new_state, released = release_reactors(net, idx, state, spent)
+    assert not released and new_state == state
+
+
+# ── Actuator duty ────────────────────────────────────────────────────────────
+def test_committed_operations_never_exceed_control_loop_writes(solved, cfg, reactor_state):
+    """A tap stepped and stepped back within an interval is not an operation.
+
+    The loop may write a position several times while it searches; only the
+    net change between the state it started from and the state it committed is
+    a switch operation, and that is what a maintenance schedule counts.
+    """
+    net, idx = solved
+    dispatch = {u: float(net.sgen.at[idx.sgens[u], "p_mw"])
+                for u in ("WF_1", "WF_2", "WF_3", "PV_1")}
+    result = regulate(net, cfg, idx, dispatch, reactor_state, warm_start=False)
+    assert result["oltc_net_moves"] <= result["oltc_moves_a"] + result["oltc_moves_b"]
+    assert result["reactor_net_moves"] <= result["reactor_moves"]
+    assert result["oltc_net_moves"] >= 0 and result["reactor_net_moves"] >= 0

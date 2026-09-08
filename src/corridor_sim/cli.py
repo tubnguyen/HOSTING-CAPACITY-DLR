@@ -38,9 +38,24 @@ def run_scenario(cfg, make_plots: bool = True, progress: bool = True) -> dict:
 
 
 def main(argv=None) -> int:
-    cfg, make_plots = parse_args(argv)
+    """Entry point. Configuration and input problems are reported as messages.
+
+    These are the two failures a user causes and can fix - a bad flag, a
+    dataset that does not cover the window - so they exit with a line of text
+    rather than a traceback. Anything else is a bug in the model and keeps its
+    traceback, which is what a bug report needs.
+    """
+    try:
+        cfg, make_plots = parse_args(argv)
+    except (ValueError, KeyError) as exc:
+        print(f"corridor-sim: {exc}", file=sys.stderr)
+        return 2
     print(f"corridor-sim  ·  {cfg.stem}")
-    run_scenario(cfg, make_plots=make_plots)
+    try:
+        run_scenario(cfg, make_plots=make_plots)
+    except (FileNotFoundError, ValueError, KeyError) as exc:
+        print(f"corridor-sim: {exc}", file=sys.stderr)
+        return 2
     return 0
 
 

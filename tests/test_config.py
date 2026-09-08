@@ -1,6 +1,9 @@
 """Configuration, presets and validation."""
 from __future__ import annotations
 
+import subprocess
+import sys
+
 import pytest
 
 from corridor_sim import constants as C
@@ -40,19 +43,57 @@ def test_unknown_plant_name_is_rejected():
     {"wf_trafo_units": 3},
     {"roughness_m": 40.0},
     {"export_cap_basis": "guess"},
+    {"dlr_cap_ratio": 0.8},
+    {"days": -5},
 ])
 def test_bad_settings_fail_fast(override):
-    with pytest.raises(AssertionError):
+    with pytest.raises(ValueError):
         build_config(**override)
+
+
+def test_validation_survives_python_O():
+    """Validation must not be assert-based.
+
+    `python -O` strips assertions, so a validator written with them silently
+    disappears under an optimisation flag and the run proceeds on a
+    configuration nobody checked. Running the real interpreter is the only way
+    to test this: importing with -O set does not re-strip already-loaded code.
+    """
+    result = subprocess.run(
+        [sys.executable, "-O", "-c",
+         "from corridor_sim.config import build_config; build_config(dlr_mode=99)"],
+        capture_output=True, text=True)
+    assert result.returncode != 0, "invalid config accepted under -O"
+    assert "ValueError" in result.stderr
+
+
+def test_der_enabled_cannot_be_mutated_after_validation():
+    """Config is frozen; the mapping inside it must be too."""
+    cfg = build_config("dlr2_der4")
+    with pytest.raises(TypeError):
+        cfg.der_enabled["WF_1"] = False
 
 
 def test_derived_quantities():
     cfg = build_config("dlr2_der4_bess", days=10)
     assert cfg.der_fleet_mw == pytest.approx(C.FLEET_MW)
     assert cfg.n_steps == 10 * 96
-    assert cfg.static_rating_a == 800.0
+    assert cfg.static_rating_a == 780.0
     assert cfg.bundle_n == 1
     assert cfg.storage_droop_active
+
+
+def test_rating_ceilings_are_ordered_above_the_static_rating():
+    """A cap below the static rating would derate the line on day one."""
+    for name in ("dlr2_der4", "twin_der4"):
+        cfg = build_config(name)
+        assert cfg.rating_cap_a > cfg.static_rating_a
+        assert cfg.equipment_rating_a > cfg.static_rating_a
+
+
+def test_rating_ceilings_can_be_switched_off():
+    bare = build_config("dlr2_der4", dlr_cap_ratio=None, equipment_limit=False)
+    assert bare.rating_cap_a is None and bare.equipment_rating_a is None
 
 
 def test_twin_conductor_doubles_the_rating():

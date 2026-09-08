@@ -139,6 +139,19 @@ def _continuation(net, floor_pu) -> bool:
     return _runpp(net, "results") and float(net.res_bus["vm_pu"].min()) >= floor_pu
 
 
+def reactive_import_mvar(net, buses) -> float:
+    """Reactive power drawn from the grid at the PCC [MVAr].
+
+    `measure_pcc_export` is signed for export, so import is its negative.
+    Naming this explicitly matters: the corridor is a long inductive overhead
+    line and at high loading it *absorbs* tens of megavars, so the quantity the
+    reactor guard is watching is always the negative of the exported one. A
+    guard written directly against the exported sign watches a condition this
+    network never reaches and never fires.
+    """
+    return -measure_pcc_export(net, buses)["q_mvar"]
+
+
 # ── Switched actuators ───────────────────────────────────────────────────────
 class MoveBudget:
     """Per-step reversal lock and move-rate limit for one actuator group."""
@@ -223,20 +236,29 @@ def reactor_step(net, idx, state: dict, budget: MoveBudget):
 
 
 def release_reactors(net, idx, state: dict, budget: MoveBudget):
-    """Stage the reactors down one step at a time until reactive import at the
-    PCC falls back under the guard threshold. Real reactors step with a time
-    delay; dumping every stage at once is both unphysical and a reliable way to
-    produce a singular Jacobian."""
+    """Stage the reactors down until reactive import at the PCC falls back
+    under the guard threshold.
+
+    Reducing local absorption is the right direction: every megavar a reactor
+    stops absorbing is a megavar the corridor no longer has to import.
+
+    Stepped one stage at a time because real reactors step with a time delay;
+    dumping every stage at once is both unphysical and a reliable way to
+    produce a singular Jacobian. The same per-step move budget as the voltage
+    loop applies, and is shared with it, so an actuator cannot exceed its
+    physical operation rate by being asked twice in one interval for two
+    different reasons."""
     new = dict(state)
     released = False
     for _ in range(C.REACTOR_MOVE_BUDGET):
-        if measure_pcc_export(net, idx.buses)["q_mvar"] <= C.Q_GUARD_MVAR:
+        if reactive_import_mvar(net, idx.buses) <= C.Q_GUARD_MVAR:
             break
         moved = False
         for name in idx.reactors:
-            if new[name] > 0:
+            if new[name] > 0 and budget.allowed(name):
                 new[name] -= 1
                 net.shunt.at[idx.shunts[name], "q_mvar"] = C.REACTOR_STEPS_MVAR[new[name]]
+                budget.record(name, -1)
                 moved = released = True
         if not moved or not solve(net, "results"):
             break
@@ -366,6 +388,19 @@ def _read_taps(net, idx):
             {n: int(net.trafo.at[idx.trafos[n], "tap_pos"]) for n in idx.oltc_b})
 
 
+def _net_moves(before: dict, after: dict) -> int:
+    """Committed position changes between two actuator states.
+
+    This is the number a tap changer's maintenance schedule is written
+    against. It is not the number of times the control loop wrote a position:
+    the loop may step an actuator and step it back within one interval while
+    it searches, and freeze-on-reversal exists precisely so that it does. Those
+    are iterations of a solver, not operations of a switch, and reporting them
+    as operations overstates the duty cycle by more than an order of magnitude.
+    """
+    return sum(abs(after[k] - before[k]) for k in before if k in after)
+
+
 def regulate(net, cfg, idx, dispatch: dict, reactor_state: dict, warm_start=True) -> dict:
     """Run the coordinated control loop for one timestep."""
     state = dict(reactor_state)
@@ -377,6 +412,7 @@ def regulate(net, cfg, idx, dispatch: dict, reactor_state: dict, warm_start=True
         "ok": ok, "iterations": 0, "converged": False, "reactor_state": state,
         "reactor_flag": "not_converged", "q_flag": "not_converged",
         "oltc_moves_a": 0, "oltc_moves_b": 0, "reactor_moves": 0,
+        "oltc_net_moves": 0, "reactor_net_moves": 0,
         "oltc_frozen": 0, "reactor_frozen": 0, "droop_gated": 0,
         "q_tracking_error_mvar": 0.0, "min_damping": C.DROOP_Q_DAMP,
         "backtracks": 0, "q_saturated": 0,
@@ -398,6 +434,8 @@ def regulate(net, cfg, idx, dispatch: dict, reactor_state: dict, warm_start=True
     reactor_budget = MoveBudget(C.REACTOR_MOVE_BUDGET)
     relax = _Relaxation(DROOP_UNITS)
     taps_a, taps_b = _read_taps(net, idx)
+    taps_entry = {**taps_a, **taps_b}
+    reactor_entry = dict(state)
 
     storage_droop = cfg.storage_droop_active
     droop_active = (cfg.control_mode == "droop" or cfg.pv_mode == "droop" or storage_droop)
@@ -500,43 +538,60 @@ def regulate(net, cfg, idx, dispatch: dict, reactor_state: dict, warm_start=True
     saturated = sum(
         abs(float(net.sgen.at[idx.sgens[u], "q_mvar"])) >= 0.99 * C.Q_LIMIT_MVAR[u]
         for u in ("WF_1", "WF_2", "WF_3", "PV_1"))
-    result.update({
-        "iterations": n_iter,
-        "backtracks": backtracks,
-        "q_saturated": int(saturated),
-        "q_tracking_error_mvar": relax.max_error,
-        "min_damping": relax.min_damping,
-        "oltc_moves_a": sum(oltc_budget.moves(n) for n in idx.oltc_a),
-        "oltc_moves_b": sum(oltc_budget.moves(n) for n in idx.oltc_b),
-        "reactor_moves": sum(reactor_budget.moves(n) for n in idx.reactors),
-        "oltc_frozen": oltc_budget.n_frozen(),
-        "reactor_frozen": reactor_budget.n_frozen(),
-        "reactor_state": state,
-    })
+    def record_actuators() -> None:
+        """Refresh the actuator counters from the state as it now stands.
+
+        Called at every exit rather than once, because the reactive guard below
+        can move both the reactors and the tap changer after the control loop
+        has finished. Counting before that ran would report a step whose
+        recorded actuator activity is not the activity the step actually had.
+        """
+        result.update({
+            "iterations": n_iter,
+            "backtracks": backtracks,
+            "q_saturated": int(saturated),
+            "q_tracking_error_mvar": relax.max_error,
+            "min_damping": relax.min_damping,
+            "oltc_moves_a": sum(oltc_budget.moves(n) for n in idx.oltc_a),
+            "oltc_moves_b": sum(oltc_budget.moves(n) for n in idx.oltc_b),
+            "reactor_moves": sum(reactor_budget.moves(n) for n in idx.reactors),
+            "oltc_net_moves": _net_moves(taps_entry, {**taps_a, **taps_b}),
+            "reactor_net_moves": _net_moves(reactor_entry, state),
+            "oltc_frozen": oltc_budget.n_frozen(),
+            "reactor_frozen": reactor_budget.n_frozen(),
+            "reactor_state": state,
+        })
+
+    record_actuators()
     if failed:
         result["ok"] = False
         return result
 
     # Reactive import guard at the PCC.
-    q_pcc = measure_pcc_export(net, idx.buses)["q_mvar"]
-    if q_pcc > C.Q_GUARD_MVAR:
+    q_import = reactive_import_mvar(net, idx.buses)
+    if q_import > C.Q_GUARD_MVAR:
         state, _ = release_reactors(net, idx, state, reactor_budget)
-        result["reactor_state"] = state
         if not solve(net, "results"):
+            record_actuators()
             result["ok"] = False
             result["reactor_flag"] = "release_failed"
             return result
         _, taps_a = oltc_step(net, idx, idx.oltc_a, "SUB_A_MV", oltc_budget)
         _, taps_b = oltc_step(net, idx, idx.oltc_b, "SUB_B_MV", oltc_budget)
         if not solve(net, "results"):
+            record_actuators()
             result["ok"] = False
             result["reactor_flag"] = "release_failed"
             return result
+        record_actuators()
         result["reactor_flag"] = "released"
     else:
         result["reactor_flag"] = "normal"
 
-    q_after = measure_pcc_export(net, idx.buses)["q_mvar"]
+    # Flagged on the magnitude of the exchange, in either direction, so it
+    # agrees with the q_within_window column, which the interface contract is
+    # actually written against.
+    q_after = abs(measure_pcc_export(net, idx.buses)["q_mvar"])
     result["q_flag"] = ("high" if q_after > C.Q_MONITOR_MVAR
                         else "elevated" if q_after > C.Q_GUARD_MVAR else "ok")
     result["taps"] = {**taps_a, **taps_b}

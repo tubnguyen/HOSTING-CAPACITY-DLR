@@ -6,18 +6,32 @@ a global, so a run is fully described by the Config it was given.
 from __future__ import annotations
 
 import argparse
+import sys
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
+from types import MappingProxyType
 
 import pandas as pd
 
 from . import constants as C
 
 DER_NAMES = tuple(C.DER_RATING_MW)
-ALL_ON = dict.fromkeys(DER_NAMES, True)
+ALL_ON = MappingProxyType(dict.fromkeys(DER_NAMES, True))
 
-DATA_DIR = Path(__file__).resolve().parents[2] / "data"
+
+def _default_data_dir() -> Path:
+    """Where the shipped dataset lives, for a source or editable checkout.
+
+    Installed non-editable the package has no dataset beside it, so this falls
+    back to ./data and the loader's own "not found" message takes over. It is
+    only a default; --data-dir is the supported way to point at your own.
+    """
+    candidate = Path(__file__).resolve().parents[2] / "data"
+    return candidate if candidate.is_dir() else Path("data")
+
+
+DATA_DIR = _default_data_dir()
 
 
 @dataclass(frozen=True)
@@ -30,7 +44,8 @@ class Config:
     wf_trafo_rating: str = "onaf"                   # "onaf" (forced) | "onan" (natural)
 
     # Generation
-    der_enabled: Mapping[str, bool] = field(default_factory=lambda: dict(ALL_ON))
+    der_enabled: Mapping[str, bool] = field(
+        default_factory=lambda: MappingProxyType(dict(ALL_ON)))
     control_mode: str = "droop"                     # "droop" | "cosphi"
     pv_control_mode: str | None = None           # None inherits control_mode
     cosphi_sign: str = "absorb"                     # "absorb" | "inject"
@@ -39,6 +54,8 @@ class Config:
 
     # Line rating
     dlr_mode: int = 1                               # 0 static | 1 ambient-adjusted | 2 full weather
+    dlr_cap_ratio: float | None = C.DLR_CAP_RATIO   # None rates the bare conductor
+    equipment_limit: bool = True                    # honour the series-equipment nameplate
     conductor_height_m: float = C.DLR_CONDUCTOR_HEIGHT_M
     roughness_m: float = C.DLR_ROUGHNESS_M
     displacement_m: float = C.DLR_DISPLACEMENT_M
@@ -100,6 +117,20 @@ class Config:
     def static_rating_a(self) -> float:
         """Static (seasonal) bundle ampacity used when dlr_mode == 0."""
         return self.line["max_i_ka"] * 1000.0
+
+    @property
+    def equipment_rating_a(self) -> float | None:
+        """Nameplate of the substation plant in series with the line [A].
+
+        None when the study is deliberately rating the bare conductor.
+        """
+        return self.line["equipment_i_ka"] * 1000.0 if self.equipment_limit else None
+
+    @property
+    def rating_cap_a(self) -> float | None:
+        """Administrative ceiling on the dynamic rating [A], if any."""
+        return (self.dlr_cap_ratio * self.static_rating_a
+                if self.dlr_cap_ratio is not None else None)
 
     @property
     def cosphi_sign_factor(self) -> float:
@@ -195,19 +226,24 @@ for _tag, (_cond, _dlr) in _MATRIX_COLUMNS.items():
                                         der_enabled=list(_DER_STEPS[4]), storage_enabled=True)
 
 
-def normalise_der(der):
-    """Accept a list of enabled names or a partial dict; return a full map."""
+def normalise_der(der) -> Mapping[str, bool]:
+    """Accept a list of enabled names or a partial dict; return a full map.
+
+    The result is read-only. Config is a frozen dataclass, but a plain dict
+    field is still mutable through the field, so a caller could quietly change
+    which plants a "frozen" study had connected after it was validated.
+    """
     if der is None:
-        return dict(ALL_ON)
+        return MappingProxyType(dict(ALL_ON))
     if isinstance(der, (list, tuple, set)):
         unknown = set(der) - set(DER_NAMES)
         if unknown:
             raise ValueError(f"unknown DER {sorted(unknown)}; valid: {list(DER_NAMES)}")
-        return {n: (n in der) for n in DER_NAMES}
+        return MappingProxyType({n: (n in der) for n in DER_NAMES})
     unknown = set(der) - set(DER_NAMES)
     if unknown:
         raise ValueError(f"unknown DER key {sorted(unknown)}; valid: {list(DER_NAMES)}")
-    return {n: bool(der.get(n, True)) for n in DER_NAMES}
+    return MappingProxyType({n: bool(der.get(n, True)) for n in DER_NAMES})
 
 
 def build_config(preset: str | None = None, **overrides) -> Config:
@@ -226,29 +262,55 @@ def build_config(preset: str | None = None, **overrides) -> Config:
 
 
 def validate(cfg: Config) -> None:
-    """Fail fast on any inconsistent knob, before a run costs time."""
-    assert cfg.conductor in C.CONDUCTOR_OPTIONS, f"bad conductor: {cfg.conductor}"
-    assert cfg.control_mode in {"droop", "cosphi"}, f"bad control_mode: {cfg.control_mode}"
-    assert cfg.pv_control_mode in {None, "droop", "cosphi"}, "bad pv_control_mode"
-    assert cfg.cosphi_sign in {"absorb", "inject"}, f"bad cosphi_sign: {cfg.cosphi_sign}"
-    assert cfg.dlr_mode in {0, 1, 2}, f"bad dlr_mode: {cfg.dlr_mode}"
-    assert cfg.export_cap_basis in {"net", "gross"}, "bad export_cap_basis"
-    assert cfg.droop_measurement in {"local", "pilot_tap_w", "pilot_sub_a"}, "bad droop_measurement"
-    assert cfg.wf_trafo_rating in {"onan", "onaf"}, "bad wf_trafo_rating"
-    assert cfg.wf_trafo_units in {1, 2}, "wf_trafo_units must be 1 or 2"
-    assert set(cfg.der_enabled) == set(DER_NAMES), "der_enabled must cover every DER"
-    assert cfg.storage_connection in {"tie", "direct"}, "bad storage_connection"
-    assert cfg.storage_q_mode in {"droop", "cosphi", "fixed", "unity"}, "bad storage_q_mode"
-    assert cfg.storage_charge_source in {"surplus_then_grid", "surplus_only", "grid_only"}, \
-        "bad storage_charge_source"
-    assert 0.0 <= cfg.storage_soc_init <= 1.0, "storage_soc_init must be in [0, 1]"
-    assert cfg.storage_p_mw > 0 and cfg.storage_e_mwh > 0, "storage ratings must be positive"
-    assert 0.0 <= cfg.storage_reserve_mw <= cfg.storage_p_mw, "reserve exceeds rating"
-    assert 0.0 <= cfg.storage_contract_mw <= cfg.storage_p_mw, "contract exceeds rating"
-    assert cfg.roughness_m > 0, "roughness_m must be positive"
-    assert cfg.conductor_height_m - cfg.displacement_m > cfg.roughness_m, \
-        "conductor height above displacement must exceed the roughness length"
-    assert cfg.end_ts > cfg.start_ts, "end must be after start"
+    """Fail fast on any inconsistent knob, before a run costs time.
+
+    Raises ValueError rather than asserting. `python -O` strips assertions, and
+    a validator that silently disappears under an optimisation flag is worse
+    than no validator: the run proceeds on a configuration nobody checked.
+    """
+    def require(condition: bool, message: str) -> None:
+        if not condition:
+            raise ValueError(message)
+
+    require(cfg.conductor in C.CONDUCTOR_OPTIONS,
+            f"bad conductor {cfg.conductor!r}; valid: {sorted(C.CONDUCTOR_OPTIONS)}")
+    require(cfg.control_mode in {"droop", "cosphi"},
+            f"bad control_mode {cfg.control_mode!r}; valid: ['cosphi', 'droop']")
+    require(cfg.pv_control_mode in {None, "droop", "cosphi"},
+            f"bad pv_control_mode {cfg.pv_control_mode!r}; valid: [None, 'cosphi', 'droop']")
+    require(cfg.cosphi_sign in {"absorb", "inject"},
+            f"bad cosphi_sign {cfg.cosphi_sign!r}; valid: ['absorb', 'inject']")
+    require(cfg.dlr_mode in {0, 1, 2}, f"bad dlr_mode {cfg.dlr_mode!r}; valid: [0, 1, 2]")
+    require(cfg.dlr_cap_ratio is None or cfg.dlr_cap_ratio >= 1.0,
+            "dlr_cap_ratio must be at least 1.0 (or None for no cap); a cap below the "
+            "static rating would derate the line the moment DLR was switched on")
+    require(cfg.export_cap_basis in {"net", "gross"},
+            f"bad export_cap_basis {cfg.export_cap_basis!r}; valid: ['gross', 'net']")
+    require(cfg.droop_measurement in {"local", "pilot_tap_w", "pilot_sub_a"},
+            f"bad droop_measurement {cfg.droop_measurement!r}")
+    require(cfg.wf_trafo_rating in {"onan", "onaf"},
+            f"bad wf_trafo_rating {cfg.wf_trafo_rating!r}; valid: ['onaf', 'onan']")
+    require(cfg.wf_trafo_units in {1, 2}, "wf_trafo_units must be 1 or 2")
+    require(set(cfg.der_enabled) == set(DER_NAMES),
+            f"der_enabled must cover every DER {list(DER_NAMES)}")
+    require(cfg.storage_connection in {"tie", "direct"},
+            f"bad storage_connection {cfg.storage_connection!r}; valid: ['direct', 'tie']")
+    require(cfg.storage_q_mode in {"droop", "cosphi", "fixed", "unity"},
+            f"bad storage_q_mode {cfg.storage_q_mode!r}")
+    require(cfg.storage_charge_source in {"surplus_then_grid", "surplus_only", "grid_only"},
+            f"bad storage_charge_source {cfg.storage_charge_source!r}")
+    require(0.0 <= cfg.storage_soc_init <= 1.0, "storage_soc_init must be in [0, 1]")
+    require(cfg.storage_p_mw > 0 and cfg.storage_e_mwh > 0,
+            "storage ratings must be positive")
+    require(0.0 <= cfg.storage_reserve_mw <= cfg.storage_p_mw,
+            "storage_reserve_mw exceeds the storage rating")
+    require(0.0 <= cfg.storage_contract_mw <= cfg.storage_p_mw,
+            "storage_contract_mw exceeds the storage rating")
+    require(cfg.roughness_m > 0, "roughness_m must be positive")
+    require(cfg.conductor_height_m - cfg.displacement_m > cfg.roughness_m,
+            "conductor height above displacement must exceed the roughness length")
+    require(cfg.days is None or cfg.days > 0, "days must be positive")
+    require(cfg.end_ts > cfg.start_ts, "end must be after start")
 
 
 def parse_args(argv=None):
@@ -260,6 +322,13 @@ def parse_args(argv=None):
     p.add_argument("--conductor", choices=sorted(C.CONDUCTOR_OPTIONS))
     p.add_argument("--dlr", dest="dlr_mode", type=int, choices=[0, 1, 2],
                    help="0 static, 1 ambient-adjusted, 2 full weather")
+    p.add_argument("--dlr-cap-ratio", dest="dlr_cap_ratio", type=float,
+                   help="administrative ceiling on the dynamic rating, as a multiple "
+                        f"of the static rating (default {C.DLR_CAP_RATIO})")
+    p.add_argument("--no-rating-cap", dest="dlr_cap_ratio", action="store_const",
+                   const=None, help="rate the bare conductor with no administrative cap")
+    p.add_argument("--no-equipment-limit", dest="equipment_limit", action="store_false",
+                   default=None, help="ignore the series substation equipment rating")
     p.add_argument("--control", dest="control_mode", choices=["droop", "cosphi"])
     p.add_argument("--der", help="comma-separated DER to connect, e.g. WF_1,WF_2,PV_1")
     p.add_argument("--storage", dest="storage_enabled", action="store_true", default=None)
@@ -275,9 +344,12 @@ def parse_args(argv=None):
     a = p.parse_args(argv)
 
     # An unset flag means "do not override", so None values are dropped here
-    # rather than in build_config.
+    # rather than in build_config. --no-rating-cap is the exception: it means
+    # None on purpose, so it is put back after the filter.
     over = {k: v for k, v in vars(a).items()
             if k not in {"preset", "der", "plots"} and v is not None}
+    if "--no-rating-cap" in (argv if argv is not None else sys.argv[1:]):
+        over["dlr_cap_ratio"] = None
     if a.der is not None:
         over["der_enabled"] = [s.strip() for s in a.der.split(",") if s.strip()]
     if a.end is not None:

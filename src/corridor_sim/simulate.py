@@ -41,7 +41,7 @@ def _trafo_loading(net, idx, name):
 
 def _zone_current(net, idx, zone):
     """Highest sub-conductor current in a rating zone [A]."""
-    amps = [_line_value(net, idx, n, "i_from_ka") for n in CORRIDOR_ZONES[zone]]
+    amps = [_line_value(net, idx, n, "i_ka") for n in CORRIDOR_ZONES[zone]]
     amps = [a for a in amps if math.isfinite(a)]
     return max(amps) * 1000.0 if amps else float("nan")
 
@@ -66,7 +66,7 @@ def collect_row(net, cfg, idx, reg: dict) -> dict:
     row["loss_trafo_mw"] = float(net.res_trafo["pl_mw"].sum())
 
     for name in EXPORT_PATH_LINES:
-        row[f"i_{name}_a"] = _line_value(net, idx, name, "i_from_ka") * 1000.0
+        row[f"i_{name}_a"] = _line_value(net, idx, name, "i_ka") * 1000.0
         row[f"p_{name}_mw"] = _line_value(net, idx, name, "p_from_mw")
     for name in DSO_TRAFO_NAMES + PLANT_TRAFOS:
         row[f"loading_{name}_pct"] = _trafo_loading(net, idx, name)
@@ -102,6 +102,12 @@ def _rating_columns(cfg, limits, diag, source, net, idx, converged):
         limit = limits[zone]
         cols[f"rating_{zone}_a"] = limit
         cols[f"rating_{zone}_ratio"] = limit / cfg.static_rating_a
+        # What the heat balance alone would have allowed, and which of the
+        # three ceilings actually set the operative rating. Without this the
+        # output cannot distinguish "the weather did not allow more" from
+        # "the weather allowed more and we were not permitted to use it".
+        cols[f"rating_{zone}_weather_a"] = terms["weather_a"]
+        cols[f"rating_{zone}_binding"] = terms["binding"]
         cols[f"wind_{zone}_ms"] = terms["wind_ms"]
         cols[f"phi_{zone}_deg"] = terms["phi_deg"]
         cols[f"qc_{zone}_wm"] = terms["qc_wm"]
@@ -118,6 +124,11 @@ def _rating_columns(cfg, limits, diag, source, net, idx, converged):
         else:
             cols[f"t_cond_{zone}_c"] = float("nan")
     cols["rating_governing_a"] = min(limits.values())
+    cols["rating_cap_a"] = cfg.rating_cap_a if cfg.rating_cap_a is not None else float("nan")
+    cols["rating_equipment_a"] = (cfg.equipment_rating_a if cfg.equipment_rating_a is not None
+                                  else float("nan"))
+    cols["rating_headroom_limited"] = int(any(
+        diag[z]["binding"] in ("cap", "equipment") for z in CORRIDOR_ZONES))
     cols["t_air_c"] = diag["Z1"]["t_air_c"]
     cols["ghi_wm2"] = diag["Z1"]["ghi_wm2"]
     return cols
@@ -185,7 +196,8 @@ def run(cfg, net, buses, inputs, progress=True) -> pd.DataFrame:
     rows = []
     counters = {"not_converged": 0, "curtail_failures": 0, "storage_resolve_failed": 0,
                 "soc_clamped": 0, "headroom_clamped": 0, "reserve_short": 0,
-                "over_temperature": 0}
+                "over_temperature": 0, "rating_headroom_limited": 0,
+                "t_cond_saturated": 0}
     t0 = time.time()
 
     for i, ts in enumerate(index):
@@ -262,8 +274,13 @@ def run(cfg, net, buses, inputs, progress=True) -> pd.DataFrame:
         row["min_damping"] = reg["min_damping"]
         row["reactor_flag"] = reg["reactor_flag"]
         row["q_flag"] = reg["q_flag"]
-        row["oltc_moves"] = reg["oltc_moves_a"] + reg["oltc_moves_b"]
-        row["reactor_moves"] = reg["reactor_moves"]
+        # Committed operations (what a maintenance schedule counts) and inner
+        # control-loop writes (a solver diagnostic) are different numbers and
+        # are reported as different columns.
+        row["oltc_operations"] = reg["oltc_net_moves"]
+        row["reactor_operations"] = reg["reactor_net_moves"]
+        row["oltc_loop_moves"] = reg["oltc_moves_a"] + reg["oltc_moves_b"]
+        row["reactor_loop_moves"] = reg["reactor_moves"]
         row["actuators_frozen"] = reg["oltc_frozen"] + reg["reactor_frozen"]
         for unit in DER_UNITS:
             row[f"available_{unit}_mw"] = dispatch[unit]
@@ -292,6 +309,10 @@ def run(cfg, net, buses, inputs, progress=True) -> pd.DataFrame:
         counters["reserve_short"] += int(short)
         counters["over_temperature"] += int(any(
             row.get(f"t_cond_{z}_c", float("nan")) > cfg.t_cond_max_c
+            for z in CORRIDOR_ZONES))
+        counters["rating_headroom_limited"] += int(row.get("rating_headroom_limited", 0))
+        counters["t_cond_saturated"] += int(any(
+            dlr.conductor_temperature_saturated(row.get(f"t_cond_{z}_c", float("nan")))
             for z in CORRIDOR_ZONES))
         rows.append(row)
 

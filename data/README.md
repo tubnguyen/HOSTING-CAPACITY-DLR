@@ -38,6 +38,19 @@ actually cause congestion.
   hours active, with a gamma-distributed depth.
 
 Resulting annual statistics: mean wind speed 7.3 m/s at 100 m, air temperature
-−24 °C to +31 °C, global irradiance 925 kWh/m², wind capacity factor 0.44–0.47
+−24 °C to +31 °C, global irradiance 923 kWh/m², wind capacity factor 0.45–0.48
 per farm and solar capacity factor 0.13 — a cold, windy, high-latitude site,
 which is where dynamic line rating has the most to offer.
+
+The hourly files carry one extra row, the closing midnight of the year. The
+simulation grid's last point is 23:45 and interpolation does not extend past
+the data, so without it the final three quarter-hours of a full-year run would
+fall outside the inputs' own coverage and the run would stop.
+
+Note what this site does *not* contain: it is never calm. Wind at conductor
+height stays above roughly 2 m/s all year, so the dynamic rating never falls
+below the static one. A site with settled anticyclonic winter weather would see
+real derating hours, and a study there would look considerably less favourable
+to DLR than this one. That is a property of the shipped dataset, not of the
+model — `test_adverse_weather_can_derate_below_static` shows the model handles
+the case; this year simply never asks it to.

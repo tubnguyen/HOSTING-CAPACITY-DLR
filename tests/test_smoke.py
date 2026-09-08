@@ -51,6 +51,39 @@ def test_conductor_stays_within_design_temperature(full_run):
         assert (result[f"t_cond_{zone}_c"] <= cfg.t_cond_max_c + 1e-6).all()
 
 
+def test_operative_rating_never_exceeds_what_the_scheme_may_use(full_run):
+    """End to end: no timestep is permitted more than the ceilings allow."""
+    cfg, result = full_run
+    for zone in network.CORRIDOR_ZONES:
+        rating = result[f"rating_{zone}_a"]
+        assert (rating <= cfg.rating_cap_a + 1e-6).all()
+        assert (rating <= cfg.equipment_rating_a + 1e-6).all()
+        assert (rating <= result[f"rating_{zone}_weather_a"] + 1e-6).all()
+
+
+def test_the_binding_ceiling_is_recorded_for_every_step(full_run):
+    _, result = full_run
+    for zone in network.CORRIDOR_ZONES:
+        recorded = set(result[f"rating_{zone}_binding"].unique())
+        assert recorded <= {"weather", "cap", "equipment", "static"}
+        assert not recorded & {""}, "every step must name what bound it"
+
+
+def test_corridor_current_stays_under_the_series_equipment_rating(full_run):
+    """The point of modelling the equipment: nothing may exceed its nameplate."""
+    cfg, result = full_run
+    for zone in network.CORRIDOR_ZONES:
+        assert (result[f"i_{zone}_a"].dropna() <= cfg.equipment_rating_a + 1.0).all()
+
+
+def test_committed_actuator_operations_are_physically_plausible(full_run):
+    """A real on-load tap changer does not operate hundreds of times a day."""
+    _, result = full_run
+    days = len(result) * 0.25 / 24.0
+    assert result["oltc_operations"].sum() / days < 60, "tap duty implausible"
+    assert (result["oltc_operations"] <= result["oltc_loop_moves"]).all()
+
+
 def test_state_of_charge_stays_inside_its_limits(full_run):
     cfg, result = full_run
     soc = result["storage_soc_mwh"]
@@ -73,6 +106,29 @@ def test_static_rating_curtails_more_than_dynamic(tmp_path):
         result = simulate.run(cfg, net, buses, dataio.load_inputs(cfg), progress=False)
         curtailed[preset] = report.metrics(cfg, result)["curtailed_mwh"]
     assert curtailed["static_der4"] > curtailed["dlr2_der4"]
+
+
+def test_removing_the_ceilings_can_only_help(tmp_path):
+    """A capped study must never deliver more than an uncapped one.
+
+    Cheap to state and easy to get wrong: it is the property that says the cap
+    is a restriction on the same model rather than a different model.
+    """
+    delivered = {}
+    for label, over in (("capped", {}),
+                        ("bare", dict(dlr_cap_ratio=None, equipment_limit=False))):
+        cfg = _short("dlr2_der4", out_dir=tmp_path, label=f"ceiling_{label}", **over)
+        net, buses = network.build(cfg)
+        result = simulate.run(cfg, net, buses, dataio.load_inputs(cfg), progress=False)
+        delivered[label] = report.metrics(cfg, result)["delivered_mwh"]
+    assert delivered["bare"] >= delivered["capped"] - 1e-6
+
+
+def test_input_window_beyond_the_dataset_is_refused(tmp_path):
+    """The guarantee the README makes, checked against the shipped dataset."""
+    cfg = build_config("dlr2_der4", start="2024-12-28", days=30, out_dir=tmp_path)
+    with pytest.raises(ValueError, match="does not span"):
+        dataio.load_inputs(cfg)
 
 
 def test_reports_and_figures_are_written(tmp_path):

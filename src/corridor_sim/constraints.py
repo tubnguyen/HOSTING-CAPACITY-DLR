@@ -99,7 +99,11 @@ def scan(net, idx, limits_a: dict, cfg):
             line_idx = idx.lines.get(name)
             if line_idx is None or not bool(net.line.at[line_idx, "in_service"]):
                 continue
-            amps = float(net.res_line.at[line_idx, "i_from_ka"]) * 1000.0
+            # i_ka is the larger of the two line ends, which is what
+            # pandapower's own loading_percent uses for every other asset in
+            # this scan. Rating the sending end alone would hold the corridor
+            # to a different standard than the transformers beside it.
+            amps = float(net.res_line.at[line_idx, "i_ka"]) * 1000.0
             pct = 100.0 * amps / limit_a if limit_a > 0 else float("inf")
             if pct > groups["corridor"][1]:
                 groups["corridor"] = (name, pct)

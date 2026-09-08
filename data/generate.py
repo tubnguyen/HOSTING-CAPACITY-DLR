@@ -21,8 +21,15 @@ STEP_MIN = 15
 
 
 def _hourly_index(year: int) -> pd.DatetimeIndex:
+    """Hourly stamps for the year, including the closing midnight.
+
+    The closing stamp is not decoration. The simulation runs on a 15-minute
+    grid whose last point is 23:45, and interpolation fills between
+    observations only, so an hourly file that stopped at 23:00 would leave the
+    final three quarter-hours of a full-year run outside its own coverage.
+    """
     return pd.date_range(f"{year}-01-01", f"{year + 1}-01-01", freq="h",
-                         tz="UTC", inclusive="left")
+                         tz="UTC", inclusive="both")
 
 
 def _quarter_index(year: int) -> pd.DatetimeIndex:
@@ -94,7 +101,8 @@ def make_weather(year: int, rng: np.random.Generator) -> pd.DataFrame:
 def make_pv(weather: pd.DataFrame, idx15: pd.DatetimeIndex, p_rated_mw: float,
             rng: np.random.Generator) -> pd.DataFrame:
     """AC export of a fixed-tilt PV plant driven by the generated irradiance."""
-    w = weather.reindex(idx15).interpolate(limit_direction="both")
+    w = (weather.reindex(idx15.union(weather.index))
+                .interpolate(method="time", limit_area="inside").reindex(idx15))
     ghi = w["ghi_wm2"].to_numpy()
     t_air = w["t_air_c"].to_numpy()
 
@@ -117,7 +125,8 @@ def make_pv(weather: pd.DataFrame, idx15: pd.DatetimeIndex, p_rated_mw: float,
 def make_load(weather: pd.DataFrame, idx15: pd.DatetimeIndex,
               rng: np.random.Generator) -> pd.DataFrame:
     """Three demand points: two MV substations and a downstream aggregate."""
-    w = weather.reindex(idx15).interpolate(limit_direction="both")
+    w = (weather.reindex(idx15.union(weather.index))
+                .interpolate(method="time", limit_area="inside").reindex(idx15))
     t_air = w["t_air_c"].to_numpy()
     hour = idx15.hour.to_numpy() + idx15.minute.to_numpy() / 60.0
     weekday = idx15.dayofweek.to_numpy() < 5

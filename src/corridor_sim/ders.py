@@ -12,11 +12,12 @@ import pandas as pd
 
 from . import constants as C
 
-CUT_IN_MS = 3.0
-CUT_OUT_MS = 25.0
 FARM_EFFICIENCY = 0.92          # wake, electrical and availability losses
 
-# Generic 6 MW onshore turbine, power in kW against wind speed in m/s.
+# Generic 6 MW onshore turbine, power in kW against wind speed in m/s. Cut-in
+# (3 m/s) and cut-out (25 m/s) are properties of this table rather than
+# separate constants, so there is only one place to edit and no second
+# definition to drift away from it.
 _CURVE_MS = np.array([
     0.0, 2.5, 3.0, 3.5, 4.0, 4.5, 5.0, 5.5, 6.0, 6.5, 7.0, 7.5, 8.0, 8.5,
     9.0, 9.5, 10.0, 10.5, 11.0, 11.5, 25.0, 25.5,

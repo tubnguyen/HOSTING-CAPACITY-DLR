@@ -39,30 +39,50 @@ TAN_PHI = math.tan(math.acos(COS_PHI))           # 0.3287
 Q_LIMIT_MVAR = {k: v * TAN_PHI for k, v in DER_RATING_MW.items()}
 
 # ── Corridor conductor ───────────────────────────────────────────────────────
-# ACSR ~305 mm2 aluminium / 39 mm2 steel, 24 mm outside diameter.
-COND_DIAMETER_M = 0.024
+# Al/St 340/30 to DIN 48204: 339 mm2 aluminium over 30 mm2 steel, 25.0 mm
+# outside diameter, 0.0851 ohm/km DC at 20 C. Datasheet values, so every
+# number below can be checked against a published conductor table.
+COND_DIAMETER_M = 0.025
 COND_ABSORPTIVITY = 0.8
 COND_EMISSIVITY = 0.8
-COND_R20_OHM_PER_KM = 0.080     # DC resistance at 20 C
+COND_R20_OHM_PER_KM = 0.0851    # DC resistance at 20 C
 ALPHA_AL = 0.00403              # aluminium temperature coefficient [1/C]
+# Skin effect raises the effective resistance at 50 Hz. For a stranded ACSR of
+# this size the AC/DC ratio is a couple of per cent; ignoring it overstates
+# ampacity by about half that, because ampacity goes as 1/sqrt(R).
+COND_AC_DC_RATIO = 1.02
 T_COND_MAX_C = 80.0             # design maximum conductor temperature
 
 
 def conductor_resistance(t_c: float) -> float:
-    """Sub-conductor DC resistance [ohm/m] at conductor temperature `t_c` [C]."""
-    return COND_R20_OHM_PER_KM * 1e-3 * (1.0 + ALPHA_AL * (t_c - 20.0))
+    """Sub-conductor AC resistance [ohm/m] at conductor temperature `t_c` [C]."""
+    return (COND_R20_OHM_PER_KM * 1e-3
+            * (1.0 + ALPHA_AL * (t_c - 20.0)) * COND_AC_DC_RATIO)
 
 
-_R50 = COND_R20_OHM_PER_KM * (1.0 + ALPHA_AL * 30.0)   # 0.0897 ohm/km at 50 C
+_R50 = COND_R20_OHM_PER_KM * (1.0 + ALPHA_AL * 30.0) * COND_AC_DC_RATIO
 
 # Two build options for the same corridor: as-built single conductor, and a
 # twin-bundle reconductoring. Bundling roughly doubles ampacity, halves
 # resistance and lowers series reactance.
+#
+# `max_i_ka` is the declared static (seasonal) rating. It is not an independent
+# figure: it is what the IEEE 738 model returns at STATIC_REF_CONDITIONS, which
+# is what makes mode 0 and modes 1-2 the same physics. `dlr.calibration()`
+# checks it on every run.
+#
+# `equipment_i_ka` is the current rating of the substation plant in series with
+# the line - current transformers, disconnectors, terminations, jumper loops.
+# It comes from the IEC 62271 standard rating series (630, 800, 1250, 1600,
+# 2000, 2500, 3150 A), so it steps rather than tracking the conductor, and a
+# line is normally built with the next size up from its own rating.
 CONDUCTOR_OPTIONS = {
     "single": dict(r_ohm_per_km=round(_R50, 4), x_ohm_per_km=0.400,
-                   c_nf_per_km=9.2, max_i_ka=0.800, bundle_n=1),
+                   c_nf_per_km=9.2, max_i_ka=0.780, equipment_i_ka=1.250,
+                   bundle_n=1),
     "twin": dict(r_ohm_per_km=round(_R50 / 2, 4), x_ohm_per_km=0.290,
-                 c_nf_per_km=12.6, max_i_ka=1.600, bundle_n=2),
+                 c_nf_per_km=12.6, max_i_ka=1.560, equipment_i_ka=2.000,
+                 bundle_n=2),
 }
 
 # Plant collector lines: a heavier 110 kV overhead lateral and a 33 kV cable.
@@ -173,6 +193,30 @@ DLR_ROUGHNESS_M = 0.30          # surface roughness length for wind extrapolatio
 DLR_DISPLACEMENT_M = 0.0
 DLR_LOW_WIND_MS = 0.6           # conservative fixed wind speed used by mode 1
 DLR_REF_HEIGHT_M = 100.0        # height of the reference wind field
+
+# The conductor is not the only thing in series with the line, and the heat
+# balance only describes the conductor. Two limits sit above it.
+#
+# The first is administrative. A dynamic rating is granted against protection
+# settings, sag and clearance margins and a permit that were all established
+# for the static rating, so operators cap the uplift at a fixed multiple rather
+# than following the heat balance wherever the weather takes it. Published
+# deployments sit around 1.3 to 1.5.
+#
+# The second is physical: the substation plant the current passes through on
+# its way to the line - current transformers, disconnectors, terminations,
+# jumper loops - is not cooled by the wind and carries its own nameplate.
+# In practice this is what stops a DLR scheme well before the conductor does,
+# and it is the single most common reason a study's headline uplift is not
+# realisable. See CONDUCTOR_OPTIONS["..."]["equipment_i_ka"].
+#
+# Set DLR_CAP_RATIO to None to rate the bare conductor with no cap at all.
+DLR_CAP_RATIO = 1.5
+
+# Bisection ceiling for the inverse (temperature) solve. A conductor that
+# needed more than this is far outside anything the study should report, so the
+# solve saturates and flags rather than silently returning the ceiling.
+T_COND_SOLVE_CAP_C = 150.0
 
 # Reference conditions the static (mode 0) ampacity is declared at: a hot day,
 # light perpendicular wind, full sun. Evaluating the IEEE 738 model at these

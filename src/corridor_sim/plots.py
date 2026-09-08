@@ -88,15 +88,28 @@ def rating_timeseries(cfg, result: pd.DataFrame, path: Path):
     rating = _corridor(ok, "rating_{zone}_a", "min").rolling(8, min_periods=1).mean()
     current = _corridor(ok, "i_{zone}_a", "max").rolling(8, min_periods=1).mean()
 
+    # The heat balance alone, drawn behind the operative rating. The gap
+    # between the two is uplift the weather offered and the scheme may not
+    # use, which is a different quantity from the headroom above the current
+    # and reads as the same thing if only one line is plotted.
+    ncols, top = 2, max(float(rating.max()), float(current.max()), cfg.static_rating_a)
+    if cfg.dlr_mode > 0 and "rating_Z1_weather_a" in ok.columns:
+        weather = _corridor(ok, "rating_{zone}_weather_a", "min").rolling(
+            8, min_periods=1).mean()
+        ax.plot(weather.index, weather, color=MUTED, lw=1.2, ls=(0, (5, 2)),
+                label="Conductor heat balance", zorder=1)
+        ax.fill_between(weather.index, rating, weather, where=weather >= rating,
+                        color=MUTED, alpha=0.10, lw=0, zorder=0)
+        ncols, top = 3, max(top, float(weather.max()))
+
     ax.plot(rating.index, rating, color=SERIES[0], lw=1.6, label="Operative rating")
     ax.plot(current.index, current, color=SERIES[1], lw=1.6, label="Corridor current")
     ax.fill_between(rating.index, current, rating, where=rating >= current,
                     color=SERIES[0], alpha=0.08, lw=0)
     _reference(ax, cfg.static_rating_a, f"Static rating {cfg.static_rating_a:.0f} A")
     _clean(ax, "Amperes", f"Corridor rating and loading  ·  {RATING_LABELS[cfg.dlr_mode]}")
-    ax.set_ylim(0, max(float(rating.max()), float(current.max()),
-                       cfg.static_rating_a) * 1.12)
-    _legend_below(ax, ncols=2, pad=0.34)
+    ax.set_ylim(0, top * 1.12)
+    _legend_below(ax, ncols=ncols, pad=0.34)
     fig.autofmt_xdate()
     fig.tight_layout()
     fig.savefig(path, bbox_inches="tight")

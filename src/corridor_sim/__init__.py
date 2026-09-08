@@ -1,3 +1,3 @@
 """Quasi-static AC power-flow study of a DLR-enabled HV export corridor."""
 
-__version__ = "1.0.0"
+__version__ = "2.0.0"

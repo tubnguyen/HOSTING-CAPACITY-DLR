@@ -11,6 +11,13 @@ Three rating modes, in increasing order of data appetite:
                    conservative fixed low value perpendicular to the line
     2  full        measured air temperature, irradiance, wind speed and the
                    per-zone wind angle of attack
+
+The heat balance rates the conductor. The operative rating is the lower of
+that, an administrative cap on the uplift over the static rating, and the
+nameplate of the substation plant in series with the line. Which of the three
+binds is recorded per zone and per timestep, because "the weather allowed more
+but we could not use it" is a different study result from "the weather did not
+allow it".
 """
 from __future__ import annotations
 
@@ -108,10 +115,14 @@ def ampacity(t_air_c, v_ms, phi_deg, irradiance_wm2, t_cond_max_c=C.T_COND_MAX_C
 
 
 def conductor_temperature(current_a, t_air_c, v_ms, phi_deg, irradiance_wm2,
-                          elev_m=C.DLR_SITE_ELEVATION_M, t_cap_c=150.0):
+                          elev_m=C.DLR_SITE_ELEVATION_M,
+                          t_cap_c=C.T_COND_SOLVE_CAP_C):
     """Temperature [C] a sub-conductor reaches carrying `current_a`.
 
     Solves I^2 R(T) + qs = qc(T) + qr(T) by bisection on [t_air, t_cap].
+    Returns the bracket ceiling if the balance does not close below it; use
+    `conductor_temperature_saturated` to tell that case from a real answer,
+    because a returned 150 C would otherwise read as a solved temperature.
     """
     if not math.isfinite(current_a):
         return float("nan")
@@ -128,7 +139,7 @@ def conductor_temperature(current_a, t_air_c, v_ms, phi_deg, irradiance_wm2,
     if imbalance(lo) <= 0.0:
         return lo
     if imbalance(hi) > 0.0:
-        return hi
+        return hi                       # saturated: see the helper below
     for _ in range(60):
         mid = 0.5 * (lo + hi)
         if imbalance(mid) > 0.0:
@@ -138,6 +149,11 @@ def conductor_temperature(current_a, t_air_c, v_ms, phi_deg, irradiance_wm2,
         if hi - lo < 0.1:
             break
     return 0.5 * (lo + hi)
+
+
+def conductor_temperature_saturated(t_cond_c, t_cap_c=C.T_COND_SOLVE_CAP_C) -> bool:
+    """Whether an inverse solve hit its bracket ceiling instead of converging."""
+    return bool(math.isfinite(t_cond_c) and t_cond_c >= t_cap_c - 1e-9)
 
 
 def bundle_ampacity(cfg, t_air_c, v_ms, phi_deg, irradiance_wm2):
@@ -159,6 +175,37 @@ def log_law(v_ref_ms, z_ref_m, z_target_m, roughness_m, displacement_m=0.0):
     return np.maximum(np.asarray(v_ref_ms, dtype=float) * ratio, 0.0)
 
 
+def align_to_index(df: pd.DataFrame, index: pd.DatetimeIndex, name: str) -> pd.DataFrame:
+    """Reindex onto the simulation grid, interpolating coarser inputs in time.
+
+    Interpolation fills *between* observations only. Anything outside the span
+    of the file is a gap in the study's inputs, not something to extend the
+    edge value across, so the requested window is checked against the file's
+    own first and last timestamp before any filling happens.
+
+    Doing it the other way round - filling first and testing for NaN afterwards
+    - looks like a coverage check and is not one: a forward/backward fill
+    leaves no NaN to find, and the run proceeds on a flat line held over from
+    the edge of the data. That is harder to notice than a crash and harder
+    still to notice than zeros, because it plots as perfectly plausible weather.
+    """
+    if df.empty:
+        raise ValueError(f"{name} is empty")
+    first, last = df.index[0], df.index[-1]
+    if index[0] < first or index[-1] > last:
+        raise ValueError(
+            f"{name} covers {first} to {last}, which does not span the requested "
+            f"window {index[0]} to {index[-1]}. Supply data for the whole window "
+            f"or shorten it with --start/--days.")
+    out = (df.reindex(index.union(df.index))
+             .interpolate(method="time", limit_area="inside")
+             .reindex(index))
+    if out.isna().any().any():
+        gaps = sorted(out.columns[out.isna().any()])
+        raise ValueError(f"{name} has gaps inside the requested window: columns {gaps}")
+    return out
+
+
 def prepare_weather(cfg, weather: pd.DataFrame, index: pd.DatetimeIndex) -> pd.DataFrame:
     """Resample weather to the simulation index and derive the per-zone wind field.
 
@@ -171,10 +218,7 @@ def prepare_weather(cfg, weather: pd.DataFrame, index: pd.DatetimeIndex) -> pd.D
     if missing:
         raise KeyError(f"weather file is missing columns: {sorted(missing)}")
 
-    w = weather.reindex(index.union(weather.index)).interpolate(
-        method="time", limit_direction="both").reindex(index)
-    if w[list(need)].isna().any().any():
-        raise ValueError("weather data does not cover the requested simulation window")
+    w = align_to_index(weather, index, "weather")
 
     speed_ref = np.hypot(w["u100_ms"].to_numpy(), w["v100_ms"].to_numpy())
     # Meteorological convention: the direction the wind blows from.
@@ -193,17 +237,46 @@ def prepare_weather(cfg, weather: pd.DataFrame, index: pd.DatetimeIndex) -> pd.D
     return out
 
 
-# ── Mode dispatcher ──────────────────────────────────────────────────────────
+# ── Operative limits: the heat balance is not the only ceiling ───────────────
+def headroom_limits(cfg) -> dict:
+    """The two ceilings that sit above the conductor heat balance.
+
+    `cap` is the administrative limit on how far a dynamic rating may exceed
+    the static one; `equipment` is the nameplate of the substation plant in
+    series with the line. Either can be absent (None), in which case only the
+    other applies.
+    """
+    cap = (cfg.dlr_cap_ratio * cfg.static_rating_a
+           if cfg.dlr_cap_ratio is not None else None)
+    return {"cap": cap, "equipment": cfg.equipment_rating_a}
+
+
+def apply_headroom(cfg, weather_a: float):
+    """Lower the weather rating onto the operative one, and say what binds."""
+    limits = headroom_limits(cfg)
+    operative, binding = weather_a, "weather"
+    for name in ("cap", "equipment"):
+        value = limits[name]
+        if value is not None and value < operative:
+            operative, binding = value, name
+    return operative, binding, limits
+
+
 def _static_terms():
     nan = float("nan")
     return {"phi_norm_deg": nan, "qc_wm": nan, "qr_wm": nan, "qs_wm": nan,
             "r_ohm_per_m": nan, "i_sub_a": nan, "t_cond_max_c": nan,
             "wind_ms": nan, "phi_deg": nan, "t_air_c": nan, "ghi_wm2": nan,
-            "source": "static"}
+            "weather_a": nan, "cap_a": nan, "equipment_a": nan,
+            "binding": "static", "source": "static"}
 
 
 def rating(cfg, row, zone: str):
-    """Operative bundle ampacity [A] for one zone and one timestep."""
+    """Operative bundle ampacity [A] for one zone and one timestep.
+
+    Returns the rating actually available to the network, which is the heat
+    balance only while nothing above it binds first.
+    """
     if cfg.dlr_mode == 0:
         return cfg.static_rating_a, _static_terms()
 
@@ -214,10 +287,15 @@ def rating(cfg, row, zone: str):
     else:
         wind, phi = float(row["wind_ms"]), float(row[f"phi_{zone}_deg"])
 
-    current, terms = bundle_ampacity(cfg, t_air, wind, phi, ghi)
+    weather_a, terms = bundle_ampacity(cfg, t_air, wind, phi, ghi)
+    operative, binding, limits = apply_headroom(cfg, weather_a)
     terms.update({"wind_ms": float(wind), "phi_deg": float(phi), "t_air_c": t_air,
-                  "ghi_wm2": ghi, "source": "weather"})
-    return current, terms
+                  "ghi_wm2": ghi, "source": "weather",
+                  "weather_a": weather_a, "binding": binding,
+                  "cap_a": limits["cap"] if limits["cap"] is not None else float("nan"),
+                  "equipment_a": (limits["equipment"] if limits["equipment"] is not None
+                                  else float("nan"))})
+    return operative, terms
 
 
 def operative_limits(cfg, weather: pd.DataFrame, ts):
@@ -244,6 +322,10 @@ def calibration(cfg) -> dict:
     Evaluating the model at the reference conditions the static rating is
     quoted for should return that rating; a large deviation means the two are
     not describing the same conductor.
+
+    Deliberately compares the *uncapped* heat balance. The cap and the series
+    equipment limit sit above the conductor and would mask a model that had
+    drifted away from the conductor it claims to describe.
     """
     ref = C.STATIC_REF_CONDITIONS
     modelled, _ = bundle_ampacity(cfg, ref["t_air_c"], ref["wind_ms"],

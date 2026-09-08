@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "corridor-sim"
-version = "1.0.0"
-description = "Quasi-static AC power-flow study of DLR-enabled hosting capacity on an HV export corridor"
+version = "2.0.0"
+description = "Quasi-static AC power-flow study of DLR-enabled hosting capacity on a 110 kV distribution corridor"
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }

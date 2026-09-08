@@ -24,7 +24,7 @@ import pandas as pd  # noqa: E402
 
 from corridor_sim import plots  # noqa: E402
 from corridor_sim.cli import run_scenario  # noqa: E402
-from corridor_sim.config import PRESETS, build_config  # noqa: E402
+from corridor_sim.config import PRESETS, Config, build_config  # noqa: E402
 
 for _var in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS",
              "NUMEXPR_NUM_THREADS"):
@@ -33,7 +33,8 @@ for _var in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS",
 TABLE_COLUMNS = [
     "scenario", "conductor", "dlr_mode", "n_der", "fleet_mw", "storage",
     "available_mwh", "delivered_mwh", "curtailed_mwh", "curtailed_pct",
-    "rating_mean_a", "rating_uplift_pct", "corridor_loading_p95_pct",
+    "rating_mean_a", "rating_uplift_pct", "rating_weather_mean_a",
+    "rating_uplift_uncapped_pct", "headroom_limited_pct", "corridor_loading_p95_pct",
     "hours_corridor_over_limit", "pcc_peak_mw", "hours_over_export_cap",
     "hours_voltage_high", "hours_voltage_low", "losses_mwh",
     "converged_pct", "reg_converged_pct", "runtime_s",
@@ -54,11 +55,27 @@ def _run_one(args) -> dict:
     return metrics
 
 
+REQUIRED_METRICS = ("scenario", "conductor", "dlr_mode", "n_der", "storage")
+
+
 def collect(out_dir: Path) -> pd.DataFrame:
-    """Gather every scenario's metrics into one table."""
+    """Gather every scenario's metrics into one table.
+
+    Skips anything under out_dir that is not a complete run rather than
+    failing: a runs/ directory accumulates whatever has been run into it, and
+    one truncated or half-written result should not cost the whole matrix.
+    """
     rows = []
     for path in sorted(out_dir.glob("*/*_metrics.json")):
-        rows.append(json.loads(path.read_text(encoding="utf-8")))
+        try:
+            row = json.loads(path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError) as exc:
+            print(f"  skipping {path}: {exc}", file=sys.stderr)
+            continue
+        if not all(k in row for k in REQUIRED_METRICS):
+            print(f"  skipping {path}: not a completed run", file=sys.stderr)
+            continue
+        rows.append(row)
     if not rows:
         raise FileNotFoundError(f"no metrics found under {out_dir}")
     table = pd.DataFrame(rows)
@@ -73,6 +90,26 @@ def _load_series(out_dir: Path, scenario: str):
     if not path.exists():
         return None
     return pd.read_csv(path, index_col=0, parse_dates=True)
+
+
+def config_for(row) -> Config:
+    """Rebuild a plotting configuration from a scenario's own metrics row.
+
+    Deliberately does not look the scenario up in PRESETS. A directory under
+    runs/ is not necessarily a preset: `corridor-sim --preset dlr2_der4` names
+    its output from the settings it ran with, not from the preset it was given,
+    and a run with --label names it whatever the user asked for. Keying on the
+    preset table makes the matrix runner crash on any output the plain CLI
+    produced - including the one the README tells you to make first.
+
+    Everything the figures need is in the metrics file, so it is read from
+    there and the directory name is treated as a label.
+    """
+    return build_config(
+        conductor=row.get("conductor", "single"),
+        dlr_mode=int(row.get("dlr_mode", 0)),
+        storage_enabled=bool(row.get("storage", 0)),
+        label=str(row["scenario"]))
 
 
 def build_outputs(out_dir: Path, figures_dir: Path, redraw: bool = True) -> pd.DataFrame:
@@ -96,12 +133,12 @@ def build_outputs(out_dir: Path, figures_dir: Path, redraw: bool = True) -> pd.D
         plots.loading_duration(runs, figures_dir / "loading_duration.png")
 
     if redraw:
-        for scenario in table["scenario"]:
-            result = _load_series(out_dir, scenario)
+        for _, row in table.iterrows():
+            result = _load_series(out_dir, row["scenario"])
             if result is None:
                 continue
-            plots.run_figures(build_config(scenario, label=scenario), result,
-                              out_dir / scenario / "figures")
+            plots.run_figures(config_for(row), result,
+                              out_dir / row["scenario"] / "figures")
     return table
 
 
@@ -110,12 +147,17 @@ def _headline(table: pd.DataFrame) -> str:
     if view.empty:
         return ""
     lines = ["", "  Full generation connected (4 plants):", ""]
-    lines.append(f"    {'scenario':<22s}{'rating A':>10s}{'curtailed %':>13s}"
-                 f"{'delivered MWh':>15s}{'hours >limit':>14s}")
+    lines.append(f"    {'scenario':<24s}{'rating A':>10s}{'weather A':>11s}"
+                 f"{'ceiling %':>11s}{'curtailed %':>13s}{'delivered MWh':>15s}")
     for _, row in view.iterrows():
-        lines.append(f"    {row['scenario']:<22s}{row['rating_mean_a']:>10.0f}"
-                     f"{row['curtailed_pct']:>13.2f}{row['delivered_mwh']:>15.0f}"
-                     f"{row['hours_corridor_over_limit']:>14.1f}")
+        weather = row.get("rating_weather_mean_a", float("nan"))
+        ceiling = row.get("headroom_limited_pct", float("nan"))
+        lines.append(f"    {row['scenario']:<24s}{row['rating_mean_a']:>10.0f}"
+                     f"{weather:>11.0f}{ceiling:>11.1f}"
+                     f"{row['curtailed_pct']:>13.2f}{row['delivered_mwh']:>15.0f}")
+    lines += ["", "    rating A   operative, after the cap and the series equipment limit",
+              "    weather A  what the conductor heat balance alone would have allowed",
+              "    ceiling %  share of steps where a ceiling, not the weather, set the rating"]
     return "\n".join(lines)
 
 

@@ -34,6 +34,10 @@ def metrics(cfg, result: pd.DataFrame) -> dict:
     # the lower of the two zones.
     rating = pd.concat([ok[f"rating_{z}_a"] for z in CORRIDOR_ZONES], axis=1).min(axis=1)
     rating_mean = float(rating.mean())
+    weather_cols = [f"rating_{z}_weather_a" for z in CORRIDOR_ZONES
+                    if f"rating_{z}_weather_a" in ok.columns]
+    weather_mean = (float(pd.concat([ok[c] for c in weather_cols], axis=1).min(axis=1).mean())
+                    if weather_cols else float("nan"))
 
     out = {
         "scenario": cfg.stem,
@@ -53,19 +57,36 @@ def metrics(cfg, result: pd.DataFrame) -> dict:
         "capacity_factor": delivered / (cfg.der_fleet_mw * n * C.DT_H) if cfg.der_fleet_mw else 0.0,
         "rating_mean_a": rating_mean,
         "rating_uplift_pct": 100.0 * (rating_mean / cfg.static_rating_a - 1.0),
+        # What the conductor heat balance alone would have allowed, so the
+        # uplift the weather offered and the uplift the scheme may use are
+        # both on the record rather than only their difference.
+        "rating_weather_mean_a": weather_mean,
+        "rating_uplift_uncapped_pct": (100.0 * (weather_mean / cfg.static_rating_a - 1.0)
+                                       if weather_mean == weather_mean else 0.0),
+        "rating_cap_a": cfg.rating_cap_a if cfg.rating_cap_a is not None else float("nan"),
+        "rating_equipment_a": (cfg.equipment_rating_a if cfg.equipment_rating_a is not None
+                               else float("nan")),
+        "hours_headroom_limited": float(ok["rating_headroom_limited"].sum() * C.DT_H),
+        "headroom_limited_pct": 100.0 * float(ok["rating_headroom_limited"].mean()),
         "corridor_loading_mean_pct": float(loading.mean()),
         "corridor_loading_p95_pct": float(loading.quantile(0.95)),
         "hours_corridor_over_limit": float((loading > 100.0).sum() * C.DT_H),
-        "hours_over_temperature": float(sum(
-            (ok[f"t_cond_{z}_c"] > cfg.t_cond_max_c).sum() for z in CORRIDOR_ZONES) * C.DT_H),
+        # Counted per interval, not per zone. Summing the zones would charge a
+        # quarter-hour twice for a step in which both zones ran hot, which is
+        # one interval of exposure, not two.
+        "hours_over_temperature": float(
+            pd.concat([ok[f"t_cond_{z}_c"] > cfg.t_cond_max_c for z in CORRIDOR_ZONES],
+                      axis=1).any(axis=1).sum() * C.DT_H),
         "pcc_peak_mw": float(ok["pcc_p_mw"].max()),
         "hours_over_export_cap": float((ok["pcc_p_mw"] > cfg.export_cap_mw).sum() * C.DT_H),
         "hours_voltage_high": float(ok["viol_L1"].sum() * C.DT_H),
         "hours_voltage_low": float(ok["viol_L2"].sum() * C.DT_H),
         "hours_q_outside_window": float((1 - ok["q_within_window"]).sum() * C.DT_H),
         "losses_mwh": _energy_mwh(ok["loss_line_mw"] + ok["loss_trafo_mw"]),
-        "oltc_operations": int(ok["oltc_moves"].sum()),
-        "reactor_operations": int(ok["reactor_moves"].sum()),
+        "oltc_operations": int(ok["oltc_operations"].sum()),
+        "reactor_operations": int(ok["reactor_operations"].sum()),
+        "oltc_loop_moves": int(ok["oltc_loop_moves"].sum()),
+        "reactor_loop_moves": int(ok["reactor_loop_moves"].sum()),
         "q_tracking_error_max_mvar": float(ok["q_tracking_error_mvar"].max()),
         "runtime_s": float(result.attrs.get("runtime_s", float("nan"))),
     }
@@ -133,6 +154,7 @@ def summary_text(cfg, result: pd.DataFrame) -> str:
         return "No converged timesteps."
 
     counters = result.attrs.get("counters", {})
+    days = max(len(result) * C.DT_H / 24.0, 1e-9)
     lines = [
         "=" * 74,
         f"  {cfg.stem}",
@@ -156,6 +178,18 @@ def summary_text(cfg, result: pd.DataFrame) -> str:
         "  LINE RATING",
         f"    mean operative        {m['rating_mean_a']:6.0f} A "
         f"({m['rating_uplift_pct']:+.1f} % against static)",
+    ]
+    if cfg.dlr_mode > 0:
+        cap = "none" if cfg.rating_cap_a is None else f"{cfg.rating_cap_a:.0f} A"
+        equip = "none" if cfg.equipment_rating_a is None else f"{cfg.equipment_rating_a:.0f} A"
+        lines += [
+            f"    weather alone would   {m['rating_weather_mean_a']:6.0f} A "
+            f"({m['rating_uplift_uncapped_pct']:+.1f} %)",
+            f"    ceilings              cap {cap}, series equipment {equip}",
+            f"    hours ceiling binds   {m['hours_headroom_limited']:6.1f} "
+            f"({m['headroom_limited_pct']:.1f} % of converged steps)",
+        ]
+    lines += [
         f"    corridor loading      mean {m['corridor_loading_mean_pct']:5.1f} %, "
         f"p95 {m['corridor_loading_p95_pct']:5.1f} %",
         f"    hours over rating     {m['hours_corridor_over_limit']:6.1f}",
@@ -186,9 +220,25 @@ def summary_text(cfg, result: pd.DataFrame) -> str:
         f"(window +/-{cfg.q_window_mvar:.1f} MVAr)",
         "",
         "  CONTROL ACTIVITY",
-        f"    tap operations        {m['oltc_operations']:6d}",
-        f"    reactor operations    {m['reactor_operations']:6d}",
+        f"    tap operations        {m['oltc_operations']:6d}"
+        f"   ({m['oltc_operations'] / max(days, 1e-9):.1f} / day)",
+        f"    reactor operations    {m['reactor_operations']:6d}"
+        f"   ({m['reactor_operations'] / max(days, 1e-9):.1f} / day)",
+        f"    control-loop writes   {m['oltc_loop_moves']:6d} tap, "
+        f"{m['reactor_loop_moves']} reactor  (solver diagnostic, not duty)",
     ]
+
+    warnings = [
+        (counters.get("not_converged", 0), "steps did not converge"),
+        (counters.get("storage_resolve_failed", 0), "storage reconciliations failed"),
+        (counters.get("soc_clamped", 0), "steps clamped by a state-of-charge limit"),
+        (counters.get("reserve_short", 0), "steps short of contracted reserve"),
+        (counters.get("t_cond_saturated", 0), "conductor temperature solves saturated"),
+    ]
+    flagged = [(n, text) for n, text in warnings if n]
+    if flagged:
+        lines += ["", "  FLAGS"]
+        lines += [f"    {n:6d}  {text}" for n, text in flagged]
 
     if cfg.storage_enabled:
         lines += [

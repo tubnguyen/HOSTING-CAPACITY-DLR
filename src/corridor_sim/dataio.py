@@ -1,8 +1,10 @@
 """Input loading and alignment onto the simulation time grid.
 
 A missing file, a gap in coverage or a duplicated timestamp raises here rather
-than being filled in silently: a run that quietly substituted zeros for missing
-weather would still produce a plausible-looking result.
+than being filled in silently. The failure mode this guards against is not a
+crash but its opposite: a run that quietly extends the edge of a short file
+across the uncovered window produces a flat line that plots as entirely
+plausible weather, and nothing downstream can tell it from a measurement.
 """
 from __future__ import annotations
 
@@ -41,13 +43,9 @@ def _read(path: Path) -> pd.DataFrame:
     return df.sort_index()
 
 
-def _align(df: pd.DataFrame, index: pd.DatetimeIndex, name: str) -> pd.DataFrame:
-    """Reindex onto the simulation grid, interpolating coarser inputs in time."""
-    out = df.reindex(index.union(df.index)).interpolate(
-        method="time", limit_direction="both").reindex(index)
-    if out.isna().any().any():
-        raise ValueError(f"{name} does not cover {index[0]} to {index[-1]}")
-    return out
+# Alignment and the coverage rule it enforces live in dlr.align_to_index, so
+# the rating weather and every other input are held to exactly the same rule.
+_align = dlr.align_to_index
 
 
 def load_inputs(cfg) -> dict:
