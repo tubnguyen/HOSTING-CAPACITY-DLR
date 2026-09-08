@@ -282,21 +282,41 @@ Config validation is fail-fast: an inconsistent knob raises before a run costs t
 
 ### 3. Ask a hosting-capacity question
 
-The usual sequence is to hold the network fixed and sweep what you are actually deciding:
+The usual sequence is to hold the network fixed and sweep what you are actually deciding.
+Start on a short window to see the shape of the answer, then re-run the two or three cases
+that matter over a full year.
+
+**Which rating scheme to buy** — a thermometer, a met mast, or neither:
 
 ```bash
-# does the corridor take a third plant on a static rating?
-corridor-sim --dlr 0 --der WF_1,WF_2,WF_3 --days 365
+corridor-sim --dlr 0 --der WF_1,WF_2,WF_3 --days 365   # static: does it take a third plant?
+corridor-sim --dlr 1 --der WF_1,WF_2,WF_3 --days 365   # ambient-adjusted: the cheap deployment
+corridor-sim --dlr 2 --der WF_1,WF_2,WF_3 --days 365   # full weather: needs a wind measurement
+```
 
-# the same fleet, ambient-adjusted rating — the cheap DLR deployment
-corridor-sim --dlr 1 --der WF_1,WF_2,WF_3 --days 365
+Compare `headroom_limited_pct` across those three before costing the wind measurement. If a
+ceiling already binds most of the year, mode 2 buys very little over mode 1.
 
-# and with a wind measurement
-corridor-sim --dlr 2 --der WF_1,WF_2,WF_3 --days 365
+**Whether the ceiling or the conductor is your problem:**
 
-# what a reconductoring would buy instead
+```bash
+corridor-sim --dlr 2 --days 365                        # as permitted
+corridor-sim --dlr 2 --no-rating-cap --days 365        # if the permit were relaxed
+corridor-sim --dlr 2 --no-equipment-limit --days 365   # if the switchgear were replaced
+```
+
+The difference between those tells you whether to spend on a protection review, on
+substation plant, or on neither — and `rating_{zone}_binding` says which, timestep by
+timestep.
+
+**What steel would buy instead:**
+
+```bash
 corridor-sim --dlr 0 --conductor twin --der WF_1,WF_2,WF_3 --days 365
 ```
+
+Note the twin bundle runs into its switchgear rather than its conductor, which is the
+result a reconductoring case most often misses.
 
 `--no-curtailment` records what *would* bind without acting on it, which is the honest way
 to size a constraint before deciding how to relieve it.

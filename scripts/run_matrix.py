@@ -147,13 +147,19 @@ def _headline(table: pd.DataFrame) -> str:
     if view.empty:
         return ""
     lines = ["", "  Full generation connected (4 plants):", ""]
-    lines.append(f"    {'scenario':<24s}{'rating A':>10s}{'weather A':>11s}"
+    width = max(24, max(len(str(v)) for v in view["scenario"]) + 2)
+    lines.append(f"    {'scenario':<{width}s}{'rating A':>10s}{'weather A':>11s}"
                  f"{'ceiling %':>11s}{'curtailed %':>13s}{'delivered MWh':>15s}")
     for _, row in view.iterrows():
+        # A static study has no weather rating and nothing above it to bind, so
+        # those columns are blank rather than nan - the absence is meaningful,
+        # and "nan" in a results table reads as a defect.
         weather = row.get("rating_weather_mean_a", float("nan"))
         ceiling = row.get("headroom_limited_pct", float("nan"))
-        lines.append(f"    {row['scenario']:<24s}{row['rating_mean_a']:>10.0f}"
-                     f"{weather:>11.0f}{ceiling:>11.1f}"
+        weather_s = "-" if weather != weather else f"{weather:.0f}"
+        ceiling_s = "-" if ceiling != ceiling else f"{ceiling:.1f}"
+        lines.append(f"    {row['scenario']:<{width}s}{row['rating_mean_a']:>10.0f}"
+                     f"{weather_s:>11s}{ceiling_s:>11s}"
                      f"{row['curtailed_pct']:>13.2f}{row['delivered_mwh']:>15.0f}")
     lines += ["", "    rating A   operative, after the cap and the series equipment limit",
               "    weather A  what the conductor heat balance alone would have allowed",
