@@ -92,21 +92,33 @@ COLLECTOR_CABLE = dict(r_ohm_per_km=0.063, x_ohm_per_km=0.110, c_nf_per_km=340.0
 COLLECTOR_CABLE_PARALLEL = 2
 
 # ── Line lengths [km] ────────────────────────────────────────────────────────
+# Round, generic distances: every substation or tap is 10 km from the next one
+# along the 110 kV network, and every wind farm sits on its own 20 km lateral
+# to the tap it exports through. They describe no real line.
+#
+# The one exception is TAP_B, the battery's tap, which sits at the interface
+# (1 km from the PCC busbar). The storage and reactive-exchange logic assume
+# the battery acts at the interface; 10 km of line between them adds enough
+# reactive loss that the droop loop no longer settles at full export.
 # The constrained corridor runs SUB_A -> TAP_PV -> TAP_W -> SUB_C -> TAP_B -> PCC.
-LEN_CORR_A_PV = 6.0
-LEN_CORR_PV_W = 8.0
-LEN_CORR_W_C = 2.5
-LEN_CORR_C_B = 16.5
-LEN_CORR_B_PCC = 0.7
+LEN_SEGMENT_KM = 10.0           # substation/tap to substation/tap
+LEN_WF_LATERAL_KM = 20.0        # wind farm to its tap
+LEN_INTERFACE_TAP_KM = 1.0      # battery tap to the PCC busbar
+
+LEN_CORR_A_PV = LEN_SEGMENT_KM
+LEN_CORR_PV_W = LEN_SEGMENT_KM
+LEN_CORR_W_C = LEN_SEGMENT_KM
+LEN_CORR_C_B = LEN_SEGMENT_KM
+LEN_CORR_B_PCC = LEN_INTERFACE_TAP_KM
 CORRIDOR_LENGTH_KM = (LEN_CORR_A_PV + LEN_CORR_PV_W + LEN_CORR_W_C
-                      + LEN_CORR_C_B + LEN_CORR_B_PCC)          # 33.7 km
-LEN_LINK_PCC_E = 15.0
-LEN_SPUR_B_E = 11.0
-LEN_LAT_WF1_WF2 = 14.0
-LEN_LAT_WF2_TAP = 16.0
-LEN_LAT_WF3_A = 21.0
-LEN_CAB_PV = 7.5
-LEN_LAT_BESS = 0.7
+                      + LEN_CORR_C_B + LEN_CORR_B_PCC)          # 41 km
+LEN_LINK_PCC_E = LEN_SEGMENT_KM
+LEN_SPUR_B_E = LEN_SEGMENT_KM
+LEN_LAT_WF1_TAP = LEN_WF_LATERAL_KM
+LEN_LAT_WF2_TAP = LEN_WF_LATERAL_KM
+LEN_LAT_WF3_A = LEN_WF_LATERAL_KM
+LEN_CAB_PV = 5.0                # 33 kV collector cable, array to substation
+LEN_LAT_BESS = 1.0              # 110 kV tie, battery substation to TAP_B
 
 # ── External grid Thevenin equivalent at the PCC ──────────────────────────────
 SRC_R_OHM = 2.0
@@ -184,9 +196,13 @@ BESS_SOC_RESERVE_FLOOR = 0.20   # keeps the contracted up-reserve deliverable
 BESS_ACTIVATION_TRIGGER_MW = 1.0
 
 # ── Dynamic line rating ──────────────────────────────────────────────────────
-# The corridor is split into two rating zones with different mean bearings, so
-# the wind angle of attack differs between them.
-DLR_ZONE_AZIMUTH_DEG = {"Z1": 110.0, "Z2": 95.0}
+# The corridor is split into two rating zones, each with one mean bearing
+# (azimuth, degrees clockwise from north), so the same wind meets each at a
+# different angle of attack. The bearing is a study choice from a fixed set of
+# round values - 0 runs north-south, 90 east-west - and is set per run through
+# Config (`--azimuth`, `--azimuth-z1`, `--azimuth-z2`). These are the defaults.
+DLR_AZIMUTH_OPTIONS_DEG = (0.0, 30.0, 45.0, 60.0, 90.0)
+DLR_ZONE_AZIMUTH_DEG = {"Z1": 90.0, "Z2": 60.0}
 DLR_SITE_ELEVATION_M = 100.0
 DLR_CONDUCTOR_HEIGHT_M = 15.0   # conductor height above ground at mid-span
 DLR_ROUGHNESS_M = 0.30          # surface roughness length for wind extrapolation

@@ -86,8 +86,9 @@ brought down by a neutral-stability log law over a roughness length, and the
 geometry is validated — an effective height at or below the roughness length
 raises rather than silently returning nonsense.
 
-The corridor is split into two rating zones with different mean bearings, so the
-same wind gives each a different angle of attack. Each zone is rated on its own
+The corridor is split into two rating zones, each with one mean bearing chosen
+per run from 0°, 30°, 45°, 60° and 90° (`--azimuth`, `--azimuth-z1`,
+`--azimuth-z2`), so the same wind can give each a different angle of attack. Each zone is rated on its own
 weather; the governing limit for the export path is the lower of the two,
 because it is one series thermal path.
 

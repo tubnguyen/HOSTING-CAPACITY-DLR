@@ -56,6 +56,8 @@ class Config:
     dlr_mode: int = 1                               # 0 static | 1 ambient-adjusted | 2 full weather
     dlr_cap_ratio: float | None = C.DLR_CAP_RATIO   # None rates the bare conductor
     equipment_limit: bool = True                    # honour the series-equipment nameplate
+    azimuth_z1_deg: float = C.DLR_ZONE_AZIMUTH_DEG["Z1"]   # zone bearing, one of
+    azimuth_z2_deg: float = C.DLR_ZONE_AZIMUTH_DEG["Z2"]   # C.DLR_AZIMUTH_OPTIONS_DEG
     conductor_height_m: float = C.DLR_CONDUCTOR_HEIGHT_M
     roughness_m: float = C.DLR_ROUGHNESS_M
     displacement_m: float = C.DLR_DISPLACEMENT_M
@@ -131,6 +133,11 @@ class Config:
         """Administrative ceiling on the dynamic rating [A], if any."""
         return (self.dlr_cap_ratio * self.static_rating_a
                 if self.dlr_cap_ratio is not None else None)
+
+    @property
+    def zone_azimuth_deg(self) -> dict:
+        """Mean bearing of each rating zone [degrees clockwise from north]."""
+        return {"Z1": self.azimuth_z1_deg, "Z2": self.azimuth_z2_deg}
 
     @property
     def cosphi_sign_factor(self) -> float:
@@ -284,6 +291,10 @@ def validate(cfg: Config) -> None:
     require(cfg.dlr_cap_ratio is None or cfg.dlr_cap_ratio >= 1.0,
             "dlr_cap_ratio must be at least 1.0 (or None for no cap); a cap below the "
             "static rating would derate the line the moment DLR was switched on")
+    for zone, azimuth in cfg.zone_azimuth_deg.items():
+        require(azimuth in C.DLR_AZIMUTH_OPTIONS_DEG,
+                f"bad azimuth {azimuth!r} for zone {zone}; valid: "
+                f"{[int(a) for a in C.DLR_AZIMUTH_OPTIONS_DEG]}")
     require(cfg.export_cap_basis in {"net", "gross"},
             f"bad export_cap_basis {cfg.export_cap_basis!r}; valid: ['gross', 'net']")
     require(cfg.droop_measurement in {"local", "pilot_tap_w", "pilot_sub_a"},
@@ -329,6 +340,14 @@ def parse_args(argv=None):
                    const=None, help="rate the bare conductor with no administrative cap")
     p.add_argument("--no-equipment-limit", dest="equipment_limit", action="store_false",
                    default=None, help="ignore the series substation equipment rating")
+    azimuths = [int(a) for a in C.DLR_AZIMUTH_OPTIONS_DEG]
+    p.add_argument("--azimuth", type=float, choices=azimuths,
+                   help="mean bearing of the whole corridor, degrees from north "
+                        "(sets both zones; 0 north-south, 90 east-west)")
+    p.add_argument("--azimuth-z1", dest="azimuth_z1_deg", type=float, choices=azimuths,
+                   help=f"bearing of zone Z1 (default {C.DLR_ZONE_AZIMUTH_DEG['Z1']:.0f})")
+    p.add_argument("--azimuth-z2", dest="azimuth_z2_deg", type=float, choices=azimuths,
+                   help=f"bearing of zone Z2 (default {C.DLR_ZONE_AZIMUTH_DEG['Z2']:.0f})")
     p.add_argument("--control", dest="control_mode", choices=["droop", "cosphi"])
     p.add_argument("--der", help="comma-separated DER to connect, e.g. WF_1,WF_2,PV_1")
     p.add_argument("--storage", dest="storage_enabled", action="store_true", default=None)
@@ -347,9 +366,13 @@ def parse_args(argv=None):
     # rather than in build_config. --no-rating-cap is the exception: it means
     # None on purpose, so it is put back after the filter.
     over = {k: v for k, v in vars(a).items()
-            if k not in {"preset", "der", "plots"} and v is not None}
+            if k not in {"preset", "der", "plots", "azimuth"} and v is not None}
     if "--no-rating-cap" in (argv if argv is not None else sys.argv[1:]):
         over["dlr_cap_ratio"] = None
+    if a.azimuth is not None:
+        # A zone-specific flag wins over the corridor-wide one.
+        over.setdefault("azimuth_z1_deg", a.azimuth)
+        over.setdefault("azimuth_z2_deg", a.azimuth)
     if a.der is not None:
         over["der_enabled"] = [s.strip() for s in a.der.split(",") if s.strip()]
     if a.end is not None:

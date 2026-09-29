@@ -237,7 +237,7 @@ def prepare_weather(cfg, weather: pd.DataFrame, index: pd.DatetimeIndex) -> pd.D
     out["ghi_wm2"] = np.clip(w["ghi_wm2"].to_numpy(), 0.0, None)
     out["wind_ms"] = speed
     out["wind_bearing_deg"] = bearing
-    for zone, azimuth in C.DLR_ZONE_AZIMUTH_DEG.items():
+    for zone, azimuth in cfg.zone_azimuth_deg.items():
         out[f"phi_{zone}_deg"] = _normalise_attack_angle(bearing - azimuth)
     return out
 

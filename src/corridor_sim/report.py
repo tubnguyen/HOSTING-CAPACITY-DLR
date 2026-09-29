@@ -43,6 +43,8 @@ def metrics(cfg, result: pd.DataFrame) -> dict:
         "scenario": cfg.stem,
         "conductor": cfg.conductor,
         "dlr_mode": cfg.dlr_mode,
+        "azimuth_z1_deg": cfg.azimuth_z1_deg,
+        "azimuth_z2_deg": cfg.azimuth_z2_deg,
         "n_der": cfg.n_der,
         "fleet_mw": cfg.der_fleet_mw,
         "storage": int(cfg.storage_enabled),
@@ -162,7 +164,8 @@ def summary_text(cfg, result: pd.DataFrame) -> str:
         f"  window            {result.index[0]:%Y-%m-%d} to {result.index[-1]:%Y-%m-%d}"
         f"  ({m['steps']} steps of {int(C.DT_H * 60)} min)",
         f"  corridor          {cfg.conductor} conductor, {cfg.bundle_n}x, "
-        f"static {cfg.static_rating_a:.0f} A, {C.CORRIDOR_LENGTH_KM:.1f} km",
+        f"static {cfg.static_rating_a:.0f} A, {C.CORRIDOR_LENGTH_KM:.0f} km, "
+        f"bearing Z1 {cfg.azimuth_z1_deg:.0f}° / Z2 {cfg.azimuth_z2_deg:.0f}°",
         f"  generation        {cfg.n_der}/4 plants, {cfg.der_fleet_mw:.0f} MW"
         f" | control {cfg.control_mode} | storage {'on' if cfg.storage_enabled else 'off'}",
         f"  rating method     mode {cfg.dlr_mode} "

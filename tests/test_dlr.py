@@ -202,3 +202,19 @@ def test_ac_resistance_exceeds_dc():
     assert C.COND_AC_DC_RATIO > 1.0
     r_ac = C.conductor_resistance(20.0)
     assert r_ac == pytest.approx(C.COND_R20_OHM_PER_KM * 1e-3 * C.COND_AC_DC_RATIO)
+
+
+def test_zone_attack_angle_follows_the_configured_azimuth():
+    """A wind from the north is parallel to a 0 deg zone and square to a 90 deg one."""
+    index = pd.date_range("2024-01-01", periods=2, freq="15min", tz="UTC")
+    weather = pd.DataFrame({"t_air_c": 10.0, "u100_ms": 0.0, "v100_ms": -8.0,
+                            "ghi_wm2": 0.0}, index=index)
+    cfg = build_config(azimuth_z1_deg=0.0, azimuth_z2_deg=90.0)
+    w = dlr.prepare_weather(cfg, weather, index)
+    assert list(w["wind_bearing_deg"]) == pytest.approx([0.0, 0.0])
+    assert list(w["phi_Z1_deg"]) == pytest.approx([0.0, 0.0])
+    assert list(w["phi_Z2_deg"]) == pytest.approx([90.0, 90.0])
+    cfg45 = build_config(azimuth_z1_deg=45.0, azimuth_z2_deg=30.0)
+    w45 = dlr.prepare_weather(cfg45, weather, index)
+    assert list(w45["phi_Z1_deg"]) == pytest.approx([45.0, 45.0])
+    assert list(w45["phi_Z2_deg"]) == pytest.approx([30.0, 30.0])

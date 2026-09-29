@@ -7,7 +7,7 @@ import sys
 import pytest
 
 from corridor_sim import constants as C
-from corridor_sim.config import DER_NAMES, PRESETS, build_config, normalise_der
+from corridor_sim.config import DER_NAMES, PRESETS, build_config, normalise_der, parse_args
 
 
 def test_every_preset_is_valid():
@@ -105,3 +105,27 @@ def test_recharge_target_covers_the_reserve_obligation():
     cfg = build_config("dlr2_der4_bess")
     deliverable = (cfg.soc_recharge_target_mwh - cfg.soc_min_mwh) * C.BESS_ETA_DIS
     assert deliverable == pytest.approx(cfg.storage_contract_mw * 1.0, rel=1e-6)
+
+
+@pytest.mark.parametrize("azimuth", C.DLR_AZIMUTH_OPTIONS_DEG)
+def test_every_offered_azimuth_is_accepted(azimuth):
+    cfg = build_config(azimuth_z1_deg=azimuth, azimuth_z2_deg=azimuth)
+    assert cfg.zone_azimuth_deg == {"Z1": azimuth, "Z2": azimuth}
+
+
+@pytest.mark.parametrize("azimuth", [15.0, 110.0, -30.0, 180.0])
+def test_an_azimuth_outside_the_offered_set_is_rejected(azimuth):
+    with pytest.raises(ValueError, match="azimuth"):
+        build_config(azimuth_z1_deg=azimuth)
+
+
+def test_azimuth_flags_set_the_zone_bearings():
+    both, _ = parse_args(["--azimuth", "45"])
+    assert both.zone_azimuth_deg == {"Z1": 45.0, "Z2": 45.0}
+    # A zone-specific flag wins over the corridor-wide one.
+    mixed, _ = parse_args(["--azimuth", "0", "--azimuth-z2", "90"])
+    assert mixed.zone_azimuth_deg == {"Z1": 0.0, "Z2": 90.0}
+    default, _ = parse_args([])
+    assert default.zone_azimuth_deg == C.DLR_ZONE_AZIMUTH_DEG
+    with pytest.raises(SystemExit):
+        parse_args(["--azimuth", "110"])

@@ -2,14 +2,18 @@
 
 Topology, west to east:
 
-    WF_3 ──┐
+    WF_3 ──┐                WF_1  WF_2
+           │                   ╲  ╱
            SUB_A ══ TAP_PV ══ TAP_W ══ SUB_C ══ TAP_B ══ PCC ── SUB_E ── SUB_B
-            │         │         │                │        │
-          20 kV      PV_1   WF_2 ── WF_1        BESS    grid
+            │         │                          │        │
+          20 kV      PV_1                       BESS    grid
 
 The double line is the constrained export corridor: everything the wind and
 solar plants generate reaches the grid through it. Rating zone Z1 covers
 SUB_A to SUB_C, zone Z2 covers SUB_C to the PCC.
+
+Distances are round and generic: 10 km between neighbouring substations and
+taps, and a 20 km lateral from each wind farm to its tap.
 
 Every element is built on every run. Disabling a plant zeroes its power rather
 than removing it, so all scenarios share one topology and stay comparable.
@@ -32,7 +36,7 @@ CORRIDOR_LINES = [n for lines in CORRIDOR_ZONES.values() for n in lines]
 EXPORT_PATH_LINES = ["CORR_A_PV", "CORR_PV_W", "CORR_W_C", "CORR_C_B", "CORR_B_PCC"]
 
 DSO_TRAFO_NAMES = list(C.DSO_TRAFOS)
-PLANT_LINES = ["LAT_WF1_WF2", "LAT_WF2_TAP", "LAT_WF3_A", "CAB_PV", "LAT_BESS"]
+PLANT_LINES = ["LAT_WF1_TAP", "LAT_WF2_TAP", "LAT_WF3_A", "CAB_PV", "LAT_BESS"]
 WF_TRAFO_BASES = ["T_WF1", "T_WF2", "T_WF3"]
 PLANT_TRAFOS = ["T_PV", "T_BESS"] + [f"{b}_{k}" for b in WF_TRAFO_BASES for k in (1, 2)]
 
@@ -92,7 +96,7 @@ def build(cfg):
     line("PCC", "SUB_E", C.LEN_LINK_PCC_E, corr, "LINK_PCC_E")
     line("SUB_B", "SUB_E", C.LEN_SPUR_B_E, corr, "SPUR_B_E")
 
-    line("WF_1_HV", "WF_2_HV", C.LEN_LAT_WF1_WF2, C.LATERAL_OHL, "LAT_WF1_WF2")
+    line("WF_1_HV", "TAP_W", C.LEN_LAT_WF1_TAP, C.LATERAL_OHL, "LAT_WF1_TAP")
     line("WF_2_HV", "TAP_W", C.LEN_LAT_WF2_TAP, C.LATERAL_OHL, "LAT_WF2_TAP")
     line("WF_3_HV", "SUB_A", C.LEN_LAT_WF3_A, C.LATERAL_OHL, "LAT_WF3_A")
     line("PV_SS", "PV_ARRAY", C.LEN_CAB_PV, C.COLLECTOR_CABLE, "CAB_PV",

@@ -65,3 +65,26 @@ def test_index_finds_every_named_element(cfg):
     for name in nw.DSO_TRAFO_NAMES + nw.PLANT_TRAFOS:
         assert name in idx.trafos
     assert idx.storage >= 0
+
+
+def test_distances_are_the_generic_round_values(cfg):
+    """10 km between substations and taps, 20 km from every wind farm to its tap.
+
+    The battery tap is the exception: it sits at the interface.
+    """
+    net, _ = nw.build(cfg)
+    length = net.line.set_index("name")["length_km"]
+    for name in nw.CORRIDOR_LINES:
+        expected = 1.0 if name == "CORR_B_PCC" else 10.0
+        assert length[name] == pytest.approx(expected)
+    for name in ("LAT_WF1_TAP", "LAT_WF2_TAP", "LAT_WF3_A"):
+        assert length[name] == pytest.approx(20.0)
+    assert C.CORRIDOR_LENGTH_KM == pytest.approx(41.0)
+
+
+def test_every_wind_farm_has_its_own_lateral(cfg):
+    net, buses = nw.build(cfg)
+    ends = {row["name"]: {row["from_bus"], row["to_bus"]} for _, row in net.line.iterrows()}
+    assert ends["LAT_WF1_TAP"] == {buses["WF_1_HV"], buses["TAP_W"]}
+    assert ends["LAT_WF2_TAP"] == {buses["WF_2_HV"], buses["TAP_W"]}
+    assert ends["LAT_WF3_A"] == {buses["WF_3_HV"], buses["SUB_A"]}

@@ -6,20 +6,20 @@ public standards and typical datasheets.
 
 ```mermaid
 graph LR
-    WF3[WF_3<br/>72 MW] -->|21 km| SUBA
-    SUBA[SUB_A<br/>110/20 kV] ===|6.0 km| TAPPV[TAP_PV]
-    TAPPV ===|8.0 km| TAPW[TAP_W]
-    TAPW ===|2.5 km| SUBC[SUB_C]
-    SUBC ===|16.5 km| TAPB[TAP_B]
-    TAPB ===|0.7 km| PCC[PCC<br/>interface]
+    WF3[WF_3<br/>72 MW] -->|20 km| SUBA
+    SUBA[SUB_A<br/>110/20 kV] ===|10 km| TAPPV[TAP_PV]
+    TAPPV ===|10 km| TAPW[TAP_W]
+    TAPW ===|10 km| SUBC[SUB_C]
+    SUBC ===|10 km| TAPB[TAP_B]
+    TAPB ===|1 km| PCC[PCC<br/>interface]
     PCC --> GRID[(external<br/>grid)]
-    PCC -->|15 km| SUBE[SUB_E]
-    SUBE -->|11 km| SUBB[SUB_B<br/>110/20 kV]
+    PCC -->|10 km| SUBE[SUB_E]
+    SUBE -->|10 km| SUBB[SUB_B<br/>110/20 kV]
 
-    PV[PV_1<br/>60 MW] -->|33 kV cable| TAPPV
-    WF2[WF_2<br/>108 MW] -->|16 km| TAPW
-    WF1[WF_1<br/>90 MW] -->|14 km| WF2
-    BESS[BESS<br/>30 MW / 60 MWh] -->|0.7 km| TAPB
+    PV[PV_1<br/>60 MW] -->|5 km, 33 kV cable| TAPPV
+    WF2[WF_2<br/>108 MW] -->|20 km| TAPW
+    WF1[WF_1<br/>90 MW] -->|20 km| TAPW
+    BESS[BESS<br/>30 MW / 60 MWh] -->|1 km| TAPB
 
     classDef corridor fill:#2a78d6,stroke:#2a78d6,color:#fff
     classDef plant fill:#1baf7a,stroke:#1baf7a,color:#fff
@@ -28,9 +28,40 @@ graph LR
 ```
 
 The heavy path `SUB_A → PCC` is the constrained export corridor: everything the
-plants generate reaches the grid through it. It is 33.7 km long and split into
-two rating zones, `Z1` (`SUB_A → SUB_C`) and `Z2` (`SUB_C → PCC`), with mean
-bearings 110° and 95°.
+plants generate reaches the grid through it. It is 41 km long and split into
+two rating zones, `Z1` (`SUB_A → SUB_C`, 30 km) and `Z2` (`SUB_C → PCC`, 11 km).
+
+### Distances and bearings
+
+The geometry is deliberately generic and describes no real line. Every
+substation or tap is **10 km** from its neighbour on the 110 kV network, and
+every wind farm sits on its own **20 km** 110 kV lateral to the tap it exports
+through. The short connections are the battery's: its tap, `TAP_B`, sits 1 km
+from the PCC busbar, and a 1 km tie joins it to the battery substation. The
+battery is meant to act at the interface, and with 10 km of line between the two
+the corridor's reactive loss at full export is more than the plant droop can
+settle. The solar collector is a 5 km 33 kV cable. All of these live in
+[`constants.py`](../src/corridor_sim/constants.py) (`LEN_SEGMENT_KM`,
+`LEN_WF_LATERAL_KM`, `LEN_INTERFACE_TAP_KM` and the per-line names).
+
+Each rating zone carries one mean bearing, the azimuth of the line in degrees
+clockwise from north, which sets the angle the wind meets it at in full-weather
+mode. It is chosen per run from a fixed set of round values:
+
+| Azimuth | Line runs |
+|---|---|
+| 0° | north – south |
+| 30° | north-north-east |
+| 45° | north-east |
+| 60° | east-north-east |
+| 90° | east – west |
+
+The defaults are `Z1` 90° and `Z2` 60°. Set both with `--azimuth 45`, or each
+zone on its own with `--azimuth-z1` and `--azimuth-z2`; in Python, the
+`azimuth_z1_deg` and `azimuth_z2_deg` Config fields. Any other value is
+rejected. The bearing only matters in full-weather mode (`--dlr 2`): the static
+and ambient-adjusted modes assume perpendicular wind whatever the line's
+direction.
 
 ## Ratings and parameters
 
@@ -92,11 +123,11 @@ results with different remedies.
 
 | Plant | Rating | Connection | Reactive capability |
 |---|---|---|---|
-| WF_1 | 15 × 6 MW = 90 MW | 110 kV lateral via WF_2 | ±29.6 MVAr |
-| WF_2 | 18 × 6 MW = 108 MW | 110 kV lateral to TAP_W | ±35.5 MVAr |
-| WF_3 | 12 × 6 MW = 72 MW | 110 kV lateral to SUB_A | ±23.7 MVAr |
-| PV_1 | 60 MW | 110/33 kV substation + 33 kV cable | ±19.7 MVAr |
-| BESS | 30 MW / 60 MWh | 110/33 kV, 0.7 km tie | ±9.9 MVAr |
+| WF_1 | 15 × 6 MW = 90 MW | 20 km 110 kV lateral to TAP_W | ±29.6 MVAr |
+| WF_2 | 18 × 6 MW = 108 MW | 20 km 110 kV lateral to TAP_W | ±35.5 MVAr |
+| WF_3 | 12 × 6 MW = 72 MW | 20 km 110 kV lateral to SUB_A | ±23.7 MVAr |
+| PV_1 | 60 MW | 110/33 kV substation + 5 km 33 kV cable | ±19.7 MVAr |
+| BESS | 30 MW / 60 MWh | 110/33 kV, 1 km tie | ±9.9 MVAr |
 
 Reactive capability is the cos φ 0.95 grid-code minimum at rated active power.
 The battery is four-quadrant and supplies reactive power at zero active power.

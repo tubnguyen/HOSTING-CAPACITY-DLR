@@ -48,20 +48,33 @@ weather offered and the scheme could not take.*
 
 ## The example network
 
-Wind and solar exporting through one congested 110 kV corridor: 33.7 km of ACSR (Al/St
+Wind and solar exporting through one congested 110 kV corridor: 41 km of ACSR (Al/St
 340/30), 780 A static, 149 MVA, against 330 MW of generation, in two rating zones whose
-bearings give the same wind a different angle of attack.
+bearings you choose. The geometry is generic, with round distances that describe no real
+line: every substation or tap is 10 km from the next, and every wind farm sits on its own
+20 km lateral to its tap. The one short link is the battery's tap, which sits at the
+interface, 1 km from the PCC.
 
 ```
- WF_3 72MW                          WF_1 90MW ─── WF_2 108MW
-     │                                                  │
-     │ 21 km                                     16 km  │
-     ▼                                                  ▼
-  SUB_A ══════ TAP_PV ══════════ TAP_W ══════ SUB_C ══════ TAP_B ══════ PCC ══> grid
-  110/20kV  6km   │        8km          2.5km       16.5km   │      0.7km
-     │            │ PV_1 60MW                                │ BESS 30MW / 60MWh
-   load           └── zone Z1 (110°) ──┴── zone Z2 (95°) ────┘
-                     ══ constrained export corridor, 33.7 km
+ WF_3 72MW         WF_1 90MW      WF_2 108MW
+    │                       ╲     ╱
+    │ 20 km           20 km  ╲   ╱ 20 km
+    ▼                         ▼ ▼
+  SUB_A ══════ TAP_PV ══════ TAP_W ══════ SUB_C ══════ TAP_B ══════ PCC ══> grid
+    │   10 km    │    10 km        10 km        10 km    │    1 km
+  load           │ PV_1 60MW                             │ BESS 30MW / 60MWh
+
+    └──────────── zone Z1, 30 km ───────────┴──── zone Z2, 11 km ────┘
+                 ══ constrained export corridor, 41 km
+```
+
+Each zone carries one mean bearing, picked from **0°, 30°, 45°, 60° or 90°** (0° runs
+north–south, 90° east–west; defaults Z1 90°, Z2 60°). It sets the angle the wind meets the
+line at, so it only changes the full-weather rating:
+
+```bash
+corridor-sim --dlr 2 --azimuth 45                       # both zones at 45°
+corridor-sim --dlr 2 --azimuth-z1 0 --azimuth-z2 90     # one zone each way
 ```
 
 Tap changers, an MV shunt reactor, plant reactive droop, a ±5 % voltage band and a
@@ -151,8 +164,8 @@ coincidences that actually cause congestion.
 
 Every network and physical parameter lives in one file,
 [`constants.py`](src/corridor_sim/constants.py): voltages and time step, voltage band,
-conductor properties and static ratings, the rating cap, corridor lengths and zone
-bearings, plant ratings, transformers, control deadbands, export cap, battery and grid
+conductor properties and static ratings, the rating cap, line lengths (`LEN_SEGMENT_KM`
+and `LEN_WF_LATERAL_KM`), the default zone bearings and the offered set, plant ratings, transformers, control deadbands, export cap, battery and grid
 strength. Topology is one readable function in
 [`network.py`](src/corridor_sim/network.py). Run-level choices are `Config` fields:
 
@@ -161,6 +174,7 @@ from corridor_sim.cli import run_scenario
 from corridor_sim.config import build_config
 
 cfg = build_config(dlr_mode=2, days=365, data_dir="/path/to/my_data",
+                   azimuth_z1_deg=45.0, azimuth_z2_deg=90.0,
                    export_cap_mw=250.0, der_enabled=["WF_1", "WF_2"], label="my_case")
 metrics, paths = run_scenario(cfg)
 ```
@@ -173,6 +187,10 @@ corridor-sim --dlr 0 --der WF_1,WF_2,WF_3 --days 365
 corridor-sim --dlr 1 --der WF_1,WF_2,WF_3 --days 365
 corridor-sim --dlr 2 --der WF_1,WF_2,WF_3 --days 365
 
+# how much the line's direction matters to the full-weather rating
+corridor-sim --dlr 2 --azimuth 0 --days 365
+corridor-sim --dlr 2 --azimuth 90 --days 365
+
 # is the ceiling or the conductor the problem?
 corridor-sim --dlr 2 --no-rating-cap --days 365        # if the permit were relaxed
 corridor-sim --dlr 2 --no-equipment-limit --days 365   # if the switchgear were replaced
@@ -182,7 +200,7 @@ corridor-sim --dlr 0 --conductor twin --der WF_1,WF_2,WF_3 --days 365
 ```
 
 Compare `headroom_limited_pct` across the rating modes before costing a met mast: on the
-shipped site a ceiling sets the rating 92 % of the year, and where that holds full-weather
+shipped site a ceiling sets the rating more than 90 % of the year, and where that holds full-weather
 DLR delivers little more than the cheaper ambient-adjusted mode. The twin bundle runs into
 its switchgear rather than its conductor, the trap a reconductoring case usually misses.
 
