@@ -1,6 +1,6 @@
 # DLR Hosting Capacity Simulator
 
-[![CI](https://github.com/tubnguyen/dlr-hosting-capacity-sim/actions/workflows/ci.yml/badge.svg)](https://github.com/tubnguyen/dlr-hosting-capacity-sim/actions/workflows/ci.yml)
+[![CI](https://github.com/tubnguyen/HOSTING-CAPACITY-DLR/actions/workflows/ci.yml/badge.svg)](https://github.com/tubnguyen/HOSTING-CAPACITY-DLR/actions/workflows/ci.yml)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
@@ -83,8 +83,8 @@ Tables in [docs/network.md](docs/network.md).
 ## Quickstart
 
 ```bash
-git clone https://github.com/tubnguyen/dlr-hosting-capacity-sim
-cd dlr-hosting-capacity-sim
+git clone https://github.com/tubnguyen/HOSTING-CAPACITY-DLR
+cd HOSTING-CAPACITY-DLR
 pip install -e ".[dev]"
 
 corridor-sim --preset dlr2_der4_bess --days 3   # full-weather DLR, all plants, storage

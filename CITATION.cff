@@ -5,7 +5,7 @@ type: software
 authors:
   - family-names: Nguyen
     given-names: Tu
-repository-code: https://github.com/tubnguyen/dlr-hosting-capacity-sim
+repository-code: https://github.com/tubnguyen/HOSTING-CAPACITY-DLR
 abstract: >-
   Quasi-static AC power-flow simulator for hosting-capacity studies on a
   110 kV distribution corridor with dynamic line rating in the loop.
