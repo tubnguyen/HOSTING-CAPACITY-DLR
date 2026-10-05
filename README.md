@@ -4,9 +4,8 @@
 [![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
-**How much wind and solar can a 110 kV network host before something binds, what binds
-first, and how much of the extra capacity dynamic line rating offers can you actually
-use?**
+**How much DER can a 110 kV network host, and how much of the extra capacity dynamic line rating offers can actually
+be used?**
 
 Quasi-static AC power flow at 15-minute resolution (pandapower), IEEE 738-2012 conductor
 heat balance, coordinated voltage control, a four-level constraint hierarchy and a
