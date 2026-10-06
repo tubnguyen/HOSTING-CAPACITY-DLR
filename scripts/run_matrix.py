@@ -182,7 +182,7 @@ def main(argv=None) -> int:
     args = parser.parse_args(argv)
 
     if args.collect_only:
-        table = build_outputs(args.out, args.figures)
+        table = build_outputs(args.out, args.figures, redraw=args.plots)
         print(table.to_string(index=False))
         return 0
 
@@ -215,7 +215,9 @@ def main(argv=None) -> int:
     if failures:
         return 1
 
-    table = build_outputs(args.out, args.figures)
+    # Each worker has already drawn its own figures, or skipped them under
+    # --no-plots, so only the comparison figures are left to build here.
+    table = build_outputs(args.out, args.figures, redraw=False)
     print(_headline(table))
     print(f"\n  table   -> {args.out / 'matrix_summary.csv'}")
     print(f"  figures -> {args.figures}")
