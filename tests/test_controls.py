@@ -4,9 +4,12 @@ from __future__ import annotations
 import pytest
 
 from corridor_sim import constants as C
+from corridor_sim import network as nw
+from corridor_sim.config import build_config
 from corridor_sim.constraints import measure_pcc_export
 from corridor_sim.controls import (
     MoveBudget,
+    NetIndex,
     droop_reference,
     measurement_bus,
     reactive_import_mvar,
@@ -88,6 +91,29 @@ def test_regulation_delivers_the_reactive_power_it_reports(solved, cfg, reactor_
             continue
         delivered = float(net.res_sgen.at[idx.sgens[unit], "q_mvar"])
         assert delivered == pytest.approx(q_ref, abs=C.DROOP_Q_ERR_TOL_MVAR + 1e-6)
+
+
+def test_battery_droop_absorbs_on_high_voltage(reactor_state):
+    """pandapower counts storage reactive power as consumption, unlike sgen.
+
+    A droop written in the generator frame and applied unconverted makes the
+    battery inject on a high voltage, pushing it further from the reference.
+    """
+    cfg = build_config("dlr2_der4_bess", days=1)
+    net, buses = nw.build(cfg)
+    idx = NetIndex.build(net, buses)
+    net.ext_grid.at[net.ext_grid.index[0], "vm_pu"] = 1.045        # grid held high
+    for unit, p in (("WF_1", 20.0), ("WF_2", 25.0), ("WF_3", 15.0), ("PV_1", 10.0)):
+        net.sgen.at[idx.sgens[unit], "p_mw"] = p
+    assert solve(net, "dc", deep=True)
+    dispatch = {u: float(net.sgen.at[idx.sgens[u], "p_mw"])
+                for u in ("WF_1", "WF_2", "WF_3", "PV_1")}
+    result = regulate(net, cfg, idx, dispatch, reactor_state, warm_start=False)
+    assert result["ok"]
+    q_ref = result["q_ref"][C.BESS_NAME]
+    assert q_ref < 0, "the voltage must sit above the droop deadband for this test"
+    injected = -float(net.res_storage.at[idx.storage, "q_mvar"])
+    assert injected == pytest.approx(q_ref, abs=C.DROOP_Q_ERR_TOL_MVAR + 1e-6)
 
 
 def test_regulation_respects_the_move_budgets(solved, cfg, reactor_state):
