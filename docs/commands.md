@@ -7,7 +7,8 @@ Everything you can type to run the simulator, with every option and its default.
 ```bash
 git clone https://github.com/tubnguyen/HOSTING-CAPACITY-DLR
 cd HOSTING-CAPACITY-DLR
-pip install -e ".[dev]"       # add numba for a several-fold faster power flow
+# add numba for a several-fold faster power flow
+pip install -e ".[dev]"       # editable mode and install dependencies
 ```
 
 ## One scenario: `corridor-sim`
@@ -16,7 +17,7 @@ pip install -e ".[dev]"       # add numba for a several-fold faster power flow
 corridor-sim [options]        # same as: python -m corridor_sim.cli [options]
 ```
 
-With no options it runs 30 days from 2024-01-01 on the shipped data: single
+Default run is 30 days from 2024-01-01: single
 conductor, ambient-adjusted rating (mode 1), all four plants, droop control, no
 battery. A `--preset` sets a named scenario, and any flag given with it overrides
 the preset.
