@@ -176,10 +176,14 @@ def main(argv=None) -> int:
     parser.add_argument("--only", nargs="+", metavar="PRESET")
     parser.add_argument("--out", type=Path, default=ROOT / "runs")
     parser.add_argument("--data-dir", type=Path, default=ROOT / "data")
-    parser.add_argument("--figures", type=Path, default=ROOT / "runs" / "figures")
+    parser.add_argument("--figures", type=Path, default=None,
+                        help="comparison figures folder (default <out>/figures)")
     parser.add_argument("--no-plots", dest="plots", action="store_false")
     parser.add_argument("--collect-only", action="store_true")
     args = parser.parse_args(argv)
+    # Follows --out, so a matrix run elsewhere does not write into runs/.
+    if args.figures is None:
+        args.figures = args.out / "figures"
 
     if args.collect_only:
         table = build_outputs(args.out, args.figures, redraw=args.plots)
