@@ -96,6 +96,23 @@ def test_rating_ceilings_can_be_switched_off():
     assert bare.rating_cap_a is None and bare.equipment_rating_a is None
 
 
+def test_no_rating_cap_flag_is_read_from_the_parser():
+    """argparse accepts an unambiguous prefix, so the flag cannot be found by text.
+
+    Searching argv for the literal flag missed --no-rating and silently kept
+    the default cap, and let a conflicting --dlr-cap-ratio pass unnoticed.
+    """
+    for argv in (["--no-rating-cap"], ["--no-rating"]):
+        cfg, _ = parse_args(argv)
+        assert cfg.dlr_cap_ratio is None, argv
+    custom, _ = parse_args(["--dlr-cap-ratio", "1.3"])
+    assert custom.dlr_cap_ratio == pytest.approx(1.3)
+    default, _ = parse_args([])
+    assert default.dlr_cap_ratio == C.DLR_CAP_RATIO
+    with pytest.raises(SystemExit):
+        parse_args(["--dlr-cap-ratio", "1.3", "--no-rating-cap"])
+
+
 def test_twin_conductor_doubles_the_rating():
     assert build_config(conductor="twin").static_rating_a == pytest.approx(
         2 * build_config(conductor="single").static_rating_a)

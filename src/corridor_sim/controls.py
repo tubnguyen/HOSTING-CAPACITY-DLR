@@ -366,7 +366,9 @@ def _entry_solve(net, cfg, idx, dispatch: dict, warm_start: bool) -> bool:
             net.sgen.at[idx.sgens[unit], "q_mvar"] = min(
                 C.Q_LIMIT_MVAR[unit], dispatch[unit] * C.TAN_PHI)
     if cfg.storage_droop_active:
-        net.storage.at[idx.storage, "q_mvar"] = cfg.q_limit_storage
+        # pandapower counts storage reactive power as consumption, so
+        # injecting is negative here, unlike on the plants above.
+        net.storage.at[idx.storage, "q_mvar"] = -cfg.q_limit_storage
     return solve(net, "dc")
 
 
@@ -484,12 +486,16 @@ def regulate(net, cfg, idx, dispatch: dict, reactor_state: dict, warm_start=True
             # power, so the low-output gate is bypassed by passing the rating.
             v = float(net.res_bus.at[idx.buses["STORAGE_PCC"], "vm_pu"])
             current_v[C.BESS_NAME] = v
+            # The droop is written in the generator frame (injection positive),
+            # but pandapower counts storage reactive power as consumption.
+            # Applied unconverted, the battery would inject on a high voltage
+            # and absorb on a low one, pushing the voltage the wrong way.
             q_ref = droop_reference(v, cfg.storage_p_mw, cfg.q_limit_storage, cfg.storage_p_mw)
-            q_now = float(net.storage.at[idx.storage, "q_mvar"])
+            q_now = -float(net.storage.at[idx.storage, "q_mvar"])
             q_new = relax.step(C.BESS_NAME, q_now, q_ref)
             if abs(q_new - q_now) > C.DROOP_Q_STEP_TOL_MVAR:
                 q_moved = True
-            net.storage.at[idx.storage, "q_mvar"] = q_new
+            net.storage.at[idx.storage, "q_mvar"] = -q_new
             result["q_ref"][C.BESS_NAME] = q_ref
 
         # Re-solve before anything is judged on the reactive power just written.

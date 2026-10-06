@@ -172,7 +172,10 @@ DROOP_Q_DAMP_MIN = 0.05
 # tolerance buys no accuracy and costs iterations.
 DROOP_Q_STEP_TOL_MVAR = 0.20    # step below this counts as settled
 DROOP_Q_ERR_TOL_MVAR = 0.50     # residual above this blocks convergence
-DROOP_MAX_ITER = 20
+# A unit whose damping has been halved to the floor closes only a few per cent
+# of its error per iteration, so a step can need a little over 20 iterations to
+# reach the residual tolerance. Steps that converge sooner are unaffected.
+DROOP_MAX_ITER = 30
 COSPHI_MAX_ITER = 3
 DROOP_P_MIN_FRAC = 0.05         # below this loading, droop reactive power is gated off
 
