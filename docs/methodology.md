@@ -41,28 +41,26 @@ governs.
 | On-load tap changer | coarse backup | ±0.50 kV | 3 |
 | Plant Q(V) droop | continuous | ±0.01 pu | — |
 
-* Reactor first, re-solve, then the tap changer, so they do not fight.
-* An actuator that reverses direction within a step is frozen for that step.
-* Droop re-solves after every update; it converges only when voltage has settled
+* Reactor first, re-solve, then the tap changer.
+* Droop re-solves after every update; converges only when voltage has settled
   and the reactive error is closed.
 * If reactive import at the PCC exceeds 20 MVAr, the reactors are stepped down.
 * Tap operations are counted as net position change per step, not loop iterations.
 
 ## 3. Constraints
 
-| Level | Check | Curtailed for? |
-|---|---|---|
-| L1 | Over-voltage on any 110 kV bus | yes |
-| L2 | Under-voltage on any 110 kV bus | no (cutting power makes it worse) |
-| L3 | Thermal: corridor, DSO transformers, plant assets | yes |
-| L4 | Export cap at the PCC | yes |
+| Check | Curtailed for? |
+|---|---|
+| Over-voltage on any 110 kV bus | yes |
+| Under-voltage on any 110 kV bus | no (cutting power makes it worse) |
+| Thermal: corridor, DSO transformers, plant assets | yes |
+| Export cap at the PCC | yes |
 
-All four levels are checked every step, so one violation never hides another.
+All four are checked every step.
 
 ## 4. Curtailment
 
-* One variable: total MW cut, shared pro rata across the connected plants.
-* Bracket the limit, then regula falsi; apply the **smallest cut that clears**.
+* Total MW curtailed, shared pro rata across the connected plants.
 * Every curtailed MWh is assigned to one cause.
 
 ## 5. Battery
@@ -74,9 +72,7 @@ All four levels are checked every step, so one violation never hides another.
 
 ## 6. Inputs
 
-Inputs of any resolution are interpolated onto the 15-minute grid. Coverage is
-checked **before** interpolation, so a file that does not span the window stops
-the run instead of being extended with a flat edge value.
+Inputs of any resolution are interpolated onto the 15-minute grid.
 
 ## 7. Not modelled
 
