@@ -6,7 +6,6 @@ a global, so a run is fully described by the Config it was given.
 from __future__ import annotations
 
 import argparse
-import sys
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -333,11 +332,12 @@ def parse_args(argv=None):
     p.add_argument("--conductor", choices=sorted(C.CONDUCTOR_OPTIONS))
     p.add_argument("--dlr", dest="dlr_mode", type=int, choices=[0, 1, 2],
                    help="0 static, 1 ambient-adjusted, 2 full weather")
-    p.add_argument("--dlr-cap-ratio", dest="dlr_cap_ratio", type=float,
-                   help="administrative ceiling on the dynamic rating, as a multiple "
-                        f"of the static rating (default {C.DLR_CAP_RATIO})")
-    p.add_argument("--no-rating-cap", dest="dlr_cap_ratio", action="store_const",
-                   const=None, help="rate the bare conductor with no administrative cap")
+    cap = p.add_mutually_exclusive_group()
+    cap.add_argument("--dlr-cap-ratio", dest="dlr_cap_ratio", type=float,
+                     help="administrative ceiling on the dynamic rating, as a multiple "
+                          f"of the static rating (default {C.DLR_CAP_RATIO})")
+    cap.add_argument("--no-rating-cap", action="store_true",
+                     help="rate the bare conductor with no administrative cap")
     p.add_argument("--no-equipment-limit", dest="equipment_limit", action="store_false",
                    default=None, help="ignore the series substation equipment rating")
     azimuths = [int(a) for a in C.DLR_AZIMUTH_OPTIONS_DEG]
@@ -364,10 +364,13 @@ def parse_args(argv=None):
 
     # An unset flag means "do not override", so None values are dropped here
     # rather than in build_config. --no-rating-cap is the exception: it means
-    # None on purpose, so it is put back after the filter.
+    # None on purpose, so it is applied after the filter. It is read from the
+    # parsed flag, not by searching argv for its text, because argparse also
+    # accepts an unambiguous prefix such as --no-rating.
     over = {k: v for k, v in vars(a).items()
-            if k not in {"preset", "der", "plots", "azimuth"} and v is not None}
-    if "--no-rating-cap" in (argv if argv is not None else sys.argv[1:]):
+            if k not in {"preset", "der", "plots", "azimuth", "no_rating_cap"}
+            and v is not None}
+    if a.no_rating_cap:
         over["dlr_cap_ratio"] = None
     if a.azimuth is not None:
         # A zone-specific flag wins over the corridor-wide one.
