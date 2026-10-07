@@ -1,22 +1,62 @@
-"""Run outputs: a headline summary, per-step results and derived tables."""
+"""Run outputs: a summary in tables and text, per-step results and metrics.
+
+A dynamic-rating run is reported beside its static reference (reference.py),
+so each headline number comes with the change DLR made to it, in the
+quantity's own unit and in per cent. The technical cost - curtailed energy,
+losses and reactive exchange - is given in energy units and, at indicative
+prices, in euros.
+"""
 from __future__ import annotations
 
+import csv
 import json
+import math
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
 
 from . import constants as C
+from .config import to_record
 from .network import CORRIDOR_ZONES
+from .reference import static_key
 from .simulate import realised_generation
 
-SEASONS = {"winter": [12, 1, 2], "spring": [3, 4, 5],
-           "summer": [6, 7, 8], "autumn": [9, 10, 11]}
+RATING_METHODS = {0: "Static rating", 1: "Ambient-adjusted DLR", 2: "Full-weather DLR"}
+
+# The single and twin builds' static ratings are references in every DLR
+# summary, whichever build the run itself uses.
+SINGLE = C.CONDUCTOR_OPTIONS["single"]
+TWIN = C.CONDUCTOR_OPTIONS["twin"]
+SINGLE_STATIC_A = SINGLE["max_i_ka"] * 1000.0
+TWIN_STATIC_A = TWIN["max_i_ka"] * 1000.0
+
+DURATION_POINTS_PCT = (0, 1, 5, 10, 25, 50, 75, 90, 95, 99, 100)
+
+# Decimals per unit in the summary tables.
+_DECIMALS = {"A": 0, "MW": 1, "MWh": 1, "MVArh": 1, "h": 2, "%": 1, "% of time": 1,
+             "°C": 1, "k€": 1, "per day": 1, "steps": 0, "cycles": 1}
 
 
 def _energy_mwh(series: pd.Series) -> float:
     return float(series.sum() * C.DT_H)
+
+
+def corridor_series(frame: pd.DataFrame, template: str, how: str) -> pd.Series:
+    """Combine the per-zone columns named by `template` into one corridor series.
+
+    The export path is one series thermal path: its rating is the lower zone's
+    and its current the higher zone's.
+    """
+    zones = pd.concat([frame[template.format(zone=z)] for z in CORRIDOR_ZONES], axis=1)
+    return zones.max(axis=1) if how == "max" else zones.min(axis=1)
+
+
+def governing_binding(frame: pd.DataFrame) -> np.ndarray:
+    """What set the corridor rating at each step: weather, cap, equipment or static."""
+    ratings = pd.concat([frame[f"rating_{z}_a"] for z in CORRIDOR_ZONES], axis=1).to_numpy()
+    labels = pd.concat([frame[f"rating_{z}_binding"] for z in CORRIDOR_ZONES], axis=1).to_numpy()
+    return labels[np.arange(len(frame)), np.argmin(ratings, axis=1)]
 
 
 def metrics(cfg, result: pd.DataFrame) -> dict:
@@ -29,15 +69,19 @@ def metrics(cfg, result: pd.DataFrame) -> dict:
     available = _energy_mwh(ok["available_total_mw"])
     curtailed = _energy_mwh(ok["curtailed_total_mw"])
     delivered = _energy_mwh(realised_generation(ok))
-    loading = pd.concat([ok[f"loading_{z}_pct"] for z in CORRIDOR_ZONES], axis=1).max(axis=1)
-    # The export path is one series thermal path, so the governing rating is
-    # the lower of the two zones.
-    rating = pd.concat([ok[f"rating_{z}_a"] for z in CORRIDOR_ZONES], axis=1).min(axis=1)
+    losses = _energy_mwh(ok["loss_line_mw"] + ok["loss_trafo_mw"])
+    reactive_outside = _energy_mwh(ok["q_exceedance_mvar"])
+    loading = corridor_series(ok, "loading_{zone}_pct", "max")
+    rating = corridor_series(ok, "rating_{zone}_a", "min")
+    current = corridor_series(ok, "i_{zone}_a", "max")
+    above_single = current > SINGLE_STATIC_A
+    binding = governing_binding(ok)
     rating_mean = float(rating.mean())
     weather_cols = [f"rating_{z}_weather_a" for z in CORRIDOR_ZONES
                     if f"rating_{z}_weather_a" in ok.columns]
     weather_mean = (float(pd.concat([ok[c] for c in weather_cols], axis=1).min(axis=1).mean())
                     if weather_cols else float("nan"))
+    t_cond = pd.concat([ok[f"t_cond_{z}_c"] for z in CORRIDOR_ZONES], axis=1)
 
     out = {
         "scenario": cfg.stem,
@@ -56,6 +100,7 @@ def metrics(cfg, result: pd.DataFrame) -> dict:
         "delivered_mwh": delivered,
         "curtailed_mwh": curtailed,
         "curtailed_pct": 100.0 * curtailed / available if available > 0 else 0.0,
+        "net_export_mwh": _energy_mwh(ok["pcc_p_mw"]),
         "capacity_factor": delivered / (cfg.der_fleet_mw * n * C.DT_H) if cfg.der_fleet_mw else 0.0,
         "rating_mean_a": rating_mean,
         "rating_uplift_pct": 100.0 * (rating_mean / cfg.static_rating_a - 1.0),
@@ -70,6 +115,18 @@ def metrics(cfg, result: pd.DataFrame) -> dict:
                                else float("nan")),
         "hours_headroom_limited": float(ok["rating_headroom_limited"].sum() * C.DT_H),
         "headroom_limited_pct": 100.0 * float(ok["rating_headroom_limited"].mean()),
+        # Share of steps each limit set the corridor rating; static runs are
+        # set by none of the three.
+        "rating_by_weather_pct": 100.0 * float(np.mean(binding == "weather")),
+        "rating_by_cap_pct": 100.0 * float(np.mean(binding == "cap")),
+        "rating_by_equipment_pct": 100.0 * float(np.mean(binding == "equipment")),
+        "corridor_current_mean_a": float(current.mean()),
+        "corridor_current_max_a": float(current.max()),
+        # Time the corridor carried more than a single conductor's static
+        # rating: how long a statically rated single conductor would have
+        # been overloaded by the same flow.
+        "hours_above_single_static": float(above_single.sum() * C.DT_H),
+        "above_single_static_pct": 100.0 * float(above_single.mean()),
         "corridor_loading_mean_pct": float(loading.mean()),
         "corridor_loading_p95_pct": float(loading.quantile(0.95)),
         "hours_corridor_over_limit": float((loading > 100.0).sum() * C.DT_H),
@@ -77,14 +134,19 @@ def metrics(cfg, result: pd.DataFrame) -> dict:
         # quarter-hour twice for a step in which both zones ran hot, which is
         # one interval of exposure, not two.
         "hours_over_temperature": float(
-            pd.concat([ok[f"t_cond_{z}_c"] > cfg.t_cond_max_c for z in CORRIDOR_ZONES],
-                      axis=1).any(axis=1).sum() * C.DT_H),
+            (t_cond > cfg.t_cond_max_c).any(axis=1).sum() * C.DT_H),
+        "t_cond_max_c": float(t_cond.max().max()),
         "pcc_peak_mw": float(ok["pcc_p_mw"].max()),
         "hours_over_export_cap": float((ok["pcc_p_mw"] > cfg.export_cap_mw).sum() * C.DT_H),
         "hours_voltage_high": float(ok["viol_L1"].sum() * C.DT_H),
         "hours_voltage_low": float(ok["viol_L2"].sum() * C.DT_H),
+        "losses_mwh": losses,
+        "reactive_exchange_mvarh": _energy_mwh(ok["pcc_q_mvar"].abs()),
+        "reactive_outside_window_mvarh": reactive_outside,
         "hours_q_outside_window": float((1 - ok["q_within_window"]).sum() * C.DT_H),
-        "losses_mwh": _energy_mwh(ok["loss_line_mw"] + ok["loss_trafo_mw"]),
+        "cost_curtailed_keur": curtailed * cfg.energy_price_eur_mwh / 1000.0,
+        "cost_losses_keur": losses * cfg.energy_price_eur_mwh / 1000.0,
+        "cost_reactive_keur": reactive_outside * cfg.reactive_price_eur_mvarh / 1000.0,
         "oltc_operations": int(ok["oltc_operations"].sum()),
         "reactor_operations": int(ok["reactor_operations"].sum()),
         "oltc_loop_moves": int(ok["oltc_loop_moves"].sum()),
@@ -92,6 +154,8 @@ def metrics(cfg, result: pd.DataFrame) -> dict:
         "q_tracking_error_max_mvar": float(ok["q_tracking_error_mvar"].max()),
         "runtime_s": float(result.attrs.get("runtime_s", float("nan"))),
     }
+    out["technical_cost_keur"] = (out["cost_curtailed_keur"] + out["cost_losses_keur"]
+                                  + out["cost_reactive_keur"])
 
     for cause in ("corridor", "dso_trafo", "plant", "overvoltage", "export_cap"):
         mask = ok["curtail_cause"] == cause
@@ -120,147 +184,443 @@ def violations(result: pd.DataFrame) -> pd.DataFrame:
     return ok.loc[mask, [c for c in cols if c in ok.columns]]
 
 
-def seasonal(cfg, result: pd.DataFrame) -> pd.DataFrame:
-    """Season-by-season view; DLR value is strongly seasonal."""
-    ok = result[result["converged"]].copy()
-    ok["season"] = ok.index.month.map(
-        {m: s for s, months in SEASONS.items() for m in months})
-    loading = pd.concat([ok[f"loading_{z}_pct"] for z in CORRIDOR_ZONES], axis=1).max(axis=1)
-    rating = pd.concat([ok[f"rating_{z}_a"] for z in CORRIDOR_ZONES], axis=1).min(axis=1)
-    frame = pd.DataFrame({
-        "season": ok["season"],
-        "available_mw": ok["available_total_mw"],
-        "curtailed_mw": ok["curtailed_total_mw"],
-        "rating_a": rating,
-        "loading_pct": loading,
-        "t_air_c": ok["t_air_c"],
-        "pcc_p_mw": ok["pcc_p_mw"],
-    })
-    agg = frame.groupby("season").agg(
-        steps=("available_mw", "size"),
-        available_mwh=("available_mw", lambda s: _energy_mwh(s)),
-        curtailed_mwh=("curtailed_mw", lambda s: _energy_mwh(s)),
-        rating_mean_a=("rating_a", "mean"),
-        loading_mean_pct=("loading_pct", "mean"),
-        loading_max_pct=("loading_pct", "max"),
-        t_air_mean_c=("t_air_c", "mean"),
-        pcc_peak_mw=("pcc_p_mw", "max"))
-    agg["curtailed_pct"] = 100.0 * agg["curtailed_mwh"] / agg["available_mwh"].replace(0, np.nan)
-    return agg.reindex([s for s in SEASONS if s in agg.index])
+def monthly_ampacity(result: pd.DataFrame) -> pd.DataFrame:
+    """Operative rating and heat-balance ampacity by calendar month [A].
+
+    One row per month in the window, with the mean, minimum and maximum of the
+    corridor (lower-zone) rating and of what the weather alone allowed.
+    """
+    ok = result[result["converged"]]
+    index = ok.index
+    if getattr(index, "tz", None) is not None:
+        index = index.tz_convert("UTC").tz_localize(None)
+    weather_cols = [f"rating_{z}_weather_a" for z in CORRIDOR_ZONES]
+    weather = (corridor_series(ok, "rating_{zone}_weather_a", "min")
+               if all(c in ok.columns for c in weather_cols)
+               else pd.Series(np.nan, index=ok.index))
+    frame = pd.DataFrame({"rating": corridor_series(ok, "rating_{zone}_a", "min").to_numpy(),
+                          "weather": weather.to_numpy()}, index=index.to_period("M"))
+    stats = frame.groupby(level=0).agg(["mean", "min", "max"])
+    stats.columns = [f"{name}_{stat}" for name, stat in stats.columns]
+    return stats
 
 
-def summary_text(cfg, result: pd.DataFrame) -> str:
-    """Human-readable run report."""
+def duration_points(result: pd.DataFrame) -> pd.DataFrame:
+    """Corridor current and operative rating exceeded for a given share of time."""
+    ok = result[result["converged"]]
+    current = corridor_series(ok, "i_{zone}_a", "max")
+    rating = corridor_series(ok, "rating_{zone}_a", "min")
+    q = [1.0 - p / 100.0 for p in DURATION_POINTS_PCT]
+    return pd.DataFrame({"pct": DURATION_POINTS_PCT,
+                         "current_a": current.quantile(q).to_numpy(),
+                         "rating_a": rating.quantile(q).to_numpy()})
+
+
+# ── Summary tables ───────────────────────────────────────────────────────────
+def _num(value, unit: str):
+    """A value rounded for reading, or None when there is nothing to show."""
+    if value is None:
+        return None
+    try:
+        value = float(value)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(value):
+        return None
+    decimals = _DECIMALS.get(unit, 2)
+    if decimals == 0:
+        return int(round(value))
+    return round(value, decimals) + 0.0       # + 0.0 turns -0.0 into 0.0
+
+
+def _change(static, dlr, relative: bool, unit: str):
+    """Absolute and relative change from the static run to the DLR run.
+
+    No relative change is given against a static value that rounds to zero:
+    a percentage of almost nothing is a large number that means nothing.
+    """
+    try:
+        static, dlr = float(static), float(dlr)
+    except (TypeError, ValueError):
+        return None, None
+    if not (math.isfinite(static) and math.isfinite(dlr)):
+        return None, None
+    delta = dlr - static
+    pct = 100.0 * delta / abs(static) if relative and _num(static, unit) else None
+    return delta, pct
+
+
+def _labels(cfg) -> dict:
+    return {"single": SINGLE["label"], "single_a": f"{SINGLE_STATIC_A:.0f}",
+            "window": f"{cfg.q_window_mvar:g}", "energy": f"{cfg.energy_price_eur_mwh:g}",
+            "reactive": f"{cfg.reactive_price_eur_mvarh:g}"}
+
+
+# (metric, label, unit, whether a relative change means anything). A share is
+# already a percentage: its change is given in percentage points only.
+HEADLINE_ROWS = (
+    ("rating_mean_a", "Mean operative rating", "A", True),
+    ("above_single_static_pct", "Time above {single_a} A ({single})", "% of time", False),
+    ("available_mwh", "Generation available", "MWh", True),
+    ("delivered_mwh", "Generation delivered", "MWh", True),
+    ("net_export_mwh", "Net export to grid (PCC)", "MWh", True),
+)
+COST_ROWS = (
+    ("curtailed_mwh", "Curtailed energy", "MWh", True),
+    ("curtailed_pct", "Curtailed share of available", "%", False),
+    ("losses_mwh", "Network losses", "MWh", True),
+    ("reactive_exchange_mvarh", "Reactive exchange at PCC", "MVArh", True),
+    ("reactive_outside_window_mvarh", "Reactive outside ±{window} MVAr", "MVArh", True),
+    ("hours_q_outside_window", "Time outside reactive window", "h", True),
+    ("cost_curtailed_keur", "Curtailment cost at {energy} €/MWh", "k€", True),
+    ("cost_losses_keur", "Loss cost at {energy} €/MWh", "k€", True),
+    ("cost_reactive_keur", "Reactive cost at {reactive} €/MVArh", "k€", True),
+    ("technical_cost_keur", "Total technical cost", "k€", True),
+)
+# The text summary keeps the rows a reader acts on.
+_TEXT_COST_KEYS = ("curtailed_mwh", "curtailed_pct", "losses_mwh",
+                   "reactive_outside_window_mvarh", "hours_q_outside_window",
+                   "technical_cost_keur")
+
+
+def _days(result: pd.DataFrame) -> str:
+    days = len(result) * C.DT_H / 24.0
+    return f"{days:g} day" + ("" if days == 1 else "s")
+
+
+def _run_column(cfg) -> str:
+    return "Static" if cfg.dlr_mode == 0 else "DLR"
+
+
+def _comparison(cfg, rows, m: dict, r: dict | None) -> pd.DataFrame:
+    names = _labels(cfg)
+    data = []
+    for key, label, unit, relative in rows:
+        label = label.format(**names)
+        if r is None:
+            data.append([label, unit, _num(m.get(key), unit)])
+            continue
+        delta, pct = _change(r.get(key), m.get(key), relative, unit)
+        data.append([label, unit, _num(r.get(key), unit), _num(m.get(key), unit),
+                     _num(delta, unit), _num(pct, "%")])
+    columns = (["Metric", "Unit", _run_column(cfg)] if r is None
+               else ["Metric", "Unit", "Static", "DLR", "Change", "Change %"])
+    return pd.DataFrame(data, columns=columns, dtype=object)
+
+
+def _ceilings(cfg) -> str:
+    cap = ("no cap" if cfg.rating_cap_a is None
+           else f"cap {cfg.rating_cap_a:.0f} A ({cfg.dlr_cap_ratio:g} × static)")
+    equipment = ("equipment limit off" if cfg.equipment_rating_a is None
+                 else f"series equipment {cfg.equipment_rating_a:.0f} A")
+    return f"{cap}, {equipment}"
+
+
+def _run_table(cfg, result: pd.DataFrame, reference) -> pd.DataFrame:
+    storage = (f"{cfg.storage_p_mw:.0f} MW / {cfg.storage_e_mwh:.0f} MWh"
+               if cfg.storage_enabled else "none")
+    if cfg.dlr_mode == 0:
+        rating = ["Operative rating", f"static {cfg.static_rating_a:.0f} A", "fixed"]
+    else:
+        rating = ["Operative rating", "lowest of heat balance, cap, equipment",
+                  _ceilings(cfg)]
+    rows = [
+        ["Scenario", cfg.stem, RATING_METHODS[cfg.dlr_mode]],
+        ["Window", f"{result.index[0]:%Y-%m-%d} to {result.index[-1]:%Y-%m-%d}",
+         f"{_days(result)}, {len(result)} steps of {C.DT_H * 60:.0f} min"],
+        ["Corridor", cfg.conductor_label,
+         f"{C.CORRIDOR_LENGTH_KM:.0f} km, static rating {cfg.static_rating_a:.0f} A"],
+        ["Generation", f"{cfg.n_der} of {len(cfg.der_enabled)} plants, "
+                       f"{cfg.der_fleet_mw:.0f} MW", f"{cfg.control_mode} control"],
+        ["Storage", storage, ""],
+        rating,
+    ]
+    if reference is not None:
+        rows.append(["Compared with", reference.cfg.stem,
+                     f"static rating, otherwise identical ({reference.origin})"])
+    elif cfg.dlr_mode > 0:
+        rows.append(["Compared with", "nothing", "no static reference available"])
+    rows.append(["Prices", f"{cfg.energy_price_eur_mwh:g} €/MWh, "
+                           f"{cfg.reactive_price_eur_mvarh:g} €/MVArh",
+                 "indicative, for the technical cost"])
+    return pd.DataFrame(rows, columns=["Item", "Value", "Detail"], dtype=object)
+
+
+def _line_rating_table(cfg, ok: pd.DataFrame) -> pd.DataFrame:
+    series = []
+    if cfg.dlr_mode > 0:
+        series.append(("Heat-balance ampacity (weather)", "A",
+                       corridor_series(ok, "rating_{zone}_weather_a", "min")))
+    series += [("Operative rating", "A", corridor_series(ok, "rating_{zone}_a", "min")),
+               ("Corridor current", "A", corridor_series(ok, "i_{zone}_a", "max")),
+               ("Corridor loading", "%", corridor_series(ok, "loading_{zone}_pct", "max"))]
+    if cfg.dlr_mode > 0:
+        series.append(("Conductor temperature", "°C",
+                       corridor_series(ok, "t_cond_{zone}_c", "max")))
+    rows = [[name, unit, _num(s.mean(), unit), _num(s.min(), unit), _num(s.max(), unit)]
+            for name, unit, s in series]
+    return pd.DataFrame(rows, columns=["Quantity", "Unit", "Mean", "Min", "Max"], dtype=object)
+
+
+def _binding_table(cfg, m: dict) -> pd.DataFrame:
+    cap = "none" if cfg.rating_cap_a is None else _num(cfg.rating_cap_a, "A")
+    equipment = "none" if cfg.equipment_rating_a is None else _num(cfg.equipment_rating_a, "A")
+    cap_name = ("Cap" if cfg.dlr_cap_ratio is None
+                else f"Cap ({cfg.dlr_cap_ratio:g} × static)")
+    rows = [["Heat balance (weather)", "varies", _num(m["rating_by_weather_pct"], "%")],
+            [cap_name, cap, _num(m["rating_by_cap_pct"], "%")],
+            ["Series equipment", equipment, _num(m["rating_by_equipment_pct"], "%")]]
+    return pd.DataFrame(rows, columns=["Limit", "A", "Share of time %"], dtype=object)
+
+
+def _monthly_table(result: pd.DataFrame) -> pd.DataFrame:
+    stats = monthly_ampacity(result)
+    rows = [[period.strftime("%b %Y"), _num(SINGLE_STATIC_A, "A"), _num(TWIN_STATIC_A, "A")]
+            + [_num(stats.at[period, f"{name}_{stat}"], "A")
+               for name in ("rating", "weather") for stat in ("mean", "min", "max")]
+            for period in stats.index]
+    columns = ["Month", f"{SINGLE['label']} static (A)", f"{TWIN['label']} static (A)",
+               "DLR mean (A)", "DLR min (A)", "DLR max (A)",
+               "Heat balance mean (A)", "Heat balance min (A)", "Heat balance max (A)"]
+    return pd.DataFrame(rows, columns=columns, dtype=object)
+
+
+def _duration_table(result: pd.DataFrame) -> pd.DataFrame:
+    points = duration_points(result)
+    rows = [[int(p), _num(i, "A"), _num(r, "A")]
+            for p, i, r in points[["pct", "current_a", "rating_a"]].itertuples(index=False)]
+    return pd.DataFrame(rows, columns=["Time exceeded (%)", "Corridor current (A)",
+                                       "Operative rating (A)"], dtype=object)
+
+
+# Run counters worth a line when they are not zero.
+_FLAGS = (
+    ("not_converged", "Steps that did not converge"),
+    ("curtail_failures", "Curtailment trials that failed to solve"),
+    ("storage_resolve_failed", "Storage reconciliations failed"),
+    ("soc_clamped", "Steps clamped by a state-of-charge limit"),
+    ("reserve_short", "Steps short of contracted reserve"),
+    ("t_cond_saturated", "Conductor temperature solves saturated"),
+)
+
+
+def _checks_table(cfg, result: pd.DataFrame, m: dict) -> pd.DataFrame:
+    days = max(len(result) * C.DT_H / 24.0, 1e-9)
+    rows = [
+        ["Converged steps", "%", m["converged_pct"]],
+        ["Current above operative rating", "h", m["hours_corridor_over_limit"]],
+        [f"Conductor above {cfg.t_cond_max_c:g} °C", "h", m["hours_over_temperature"]],
+        [f"Voltage above {C.V_MAX_PU:g} pu", "h", m["hours_voltage_high"]],
+        [f"Voltage below {C.V_MIN_PU:g} pu", "h", m["hours_voltage_low"]],
+        [f"Export above {cfg.export_cap_mw:g} MW cap", "h", m["hours_over_export_cap"]],
+        ["Peak export at PCC", "MW", m["pcc_peak_mw"]],
+        ["Tap operations", "per day", m["oltc_operations"] / days],
+        ["Reactor operations", "per day", m["reactor_operations"] / days],
+    ]
+    counters = result.attrs.get("counters", {})
+    rows += [[text, "steps", counters[key]] for key, text in _FLAGS if counters.get(key)]
+    return pd.DataFrame([[name, unit, _num(v, unit)] for name, unit, v in rows],
+                        columns=["Check", "Unit", "Value"], dtype=object)
+
+
+def _storage_table(m: dict) -> pd.DataFrame:
+    rows = [["Discharged", "MWh", m["storage_discharged_mwh"]],
+            ["Charged", "MWh", m["storage_charged_mwh"]],
+            ["Equivalent cycles", "cycles", m["storage_cycles"]],
+            ["Delivery shortfall", "MWh", m["storage_shortfall_mwh"]],
+            ["Hours short of reserve", "h", m["hours_reserve_short"]],
+            ["Mean state of charge", "%", m["storage_soc_mean_pct"]]]
+    return pd.DataFrame([[name, unit, _num(v, unit)] for name, unit, v in rows],
+                        columns=["Metric", "Unit", "Value"], dtype=object)
+
+
+def _reference_metrics(reference) -> dict | None:
+    if reference is None:
+        return None
+    r = metrics(reference.cfg, reference.result)
+    return r if r.get("converged_steps") else None
+
+
+def summary_tables(cfg, result: pd.DataFrame, reference=None) -> dict:
+    """The run summary as titled tables, in reading order.
+
+    With a static reference the headline and technical cost tables give
+    static, DLR, the change in the quantity's unit and the change in per cent.
+    """
+    m = metrics(cfg, result)
+    r = _reference_metrics(reference)
+    tables = {"RUN": _run_table(cfg, result, reference if r else None)}
+    if not m.get("converged_steps"):
+        tables["RESULT"] = pd.DataFrame([["No converged timesteps"]], columns=["Note"])
+        return tables
+    ok = result[result["converged"]]
+    tables["HEADLINE: DLR VS STATIC" if r else "HEADLINE"] = _comparison(cfg, HEADLINE_ROWS, m, r)
+    tables["TECHNICAL COST"] = _comparison(cfg, COST_ROWS, m, r)
+    tables["LINE RATING"] = _line_rating_table(cfg, ok)
+    if cfg.dlr_mode > 0:
+        tables["RATING SET BY"] = _binding_table(cfg, m)
+        tables["OPERATIVE AMPACITY BY MONTH"] = _monthly_table(result)
+    tables["CURRENT DURATION"] = _duration_table(result)
+    tables["CHECKS"] = _checks_table(cfg, result, m)
+    if cfg.storage_enabled:
+        tables["STORAGE"] = _storage_table(m)
+    return tables
+
+
+def write_tables(tables: dict, path: Path) -> None:
+    """Write titled tables one after another into a single CSV file.
+
+    Each table is its title, a header row and its rows, followed by a blank
+    line. Written with a byte-order mark so a spreadsheet shows € and °C.
+    """
+    with open(path, "w", newline="", encoding="utf-8-sig") as fh:
+        writer = csv.writer(fh, lineterminator="\n")
+        for i, (title, table) in enumerate(tables.items()):
+            if i:
+                writer.writerow([])
+            writer.writerow([title])
+            writer.writerow(list(table.columns))
+            for row in table.itertuples(index=False):
+                writer.writerow(["" if v is None or (isinstance(v, float) and math.isnan(v))
+                                 else v for v in row])
+
+
+# ── Text summary ─────────────────────────────────────────────────────────────
+def _fmt(value, unit: str, signed: bool = False) -> str:
+    if value is None:
+        return "-"
+    value = float(value)
+    if not math.isfinite(value):
+        return "-"
+    if unit in ("A", "steps"):
+        decimals = 0
+    elif unit in ("MWh", "MVArh"):
+        decimals = 0 if abs(value) >= 100 else 1
+    else:
+        decimals = 0 if abs(value) >= 1000 else 1
+    value = round(value, decimals) + 0.0        # no "-0"
+    return f"{value:+.{decimals}f}" if signed else f"{value:.{decimals}f}"
+
+
+_TEXT_WIDTH = 80
+
+
+def _text_rows(cfg, rows, m: dict, r: dict | None, title: str = "") -> list:
+    """A header line, then one aligned line per metric."""
+    names = _labels(cfg)
+    if r is None:
+        lines = [f"  {title:<39s}{_run_column(cfg):>10s}"]
+    else:
+        lines = [f"  {title:<39s}{'Static':>10s}{'DLR':>10s}{'Change':>11s}{'%':>8s}"]
+    for key, label, unit, relative in rows:
+        label = label.format(**names)
+        if r is None:
+            lines.append(f"  {label:<30s}{unit:<9s}{_fmt(m.get(key), unit):>10s}")
+            continue
+        delta, pct = _change(r.get(key), m.get(key), relative, unit)
+        change = _fmt(delta, unit, signed=True) + (" pp" if unit.startswith("%") else "")
+        lines.append(f"  {label:<30s}{unit:<9s}{_fmt(r.get(key), unit):>10s}"
+                     f"{_fmt(m.get(key), unit):>10s}{change:>11s}"
+                     f"{'' if pct is None else _fmt(pct, '%', signed=True):>8s}")
+    return lines
+
+
+def summary_text(cfg, result: pd.DataFrame, reference=None) -> str:
+    """Short human-readable run report; the summary CSV holds every table."""
     m = metrics(cfg, result)
     if not m.get("converged_steps"):
         return "No converged timesteps."
-
+    r = _reference_metrics(reference)
     counters = result.attrs.get("counters", {})
-    days = max(len(result) * C.DT_H / 24.0, 1e-9)
+    days = len(result) * C.DT_H / 24.0
+    rule = "=" * _TEXT_WIDTH
+    title = RATING_METHODS[cfg.dlr_mode] + (" compared with the static rating" if r else "")
+    storage = (f"storage {cfg.storage_p_mw:.0f} MW / {cfg.storage_e_mwh:.0f} MWh"
+               if cfg.storage_enabled else "no storage")
     lines = [
-        "=" * 74,
-        f"  {cfg.stem}",
-        "=" * 74,
-        f"  window            {result.index[0]:%Y-%m-%d} to {result.index[-1]:%Y-%m-%d}"
-        f"  ({m['steps']} steps of {int(C.DT_H * 60)} min)",
-        f"  corridor          {cfg.conductor} conductor, {cfg.bundle_n}x, "
-        f"static {cfg.static_rating_a:.0f} A, {C.CORRIDOR_LENGTH_KM:.0f} km, "
-        f"bearing Z1 {cfg.azimuth_z1_deg:.0f}° / Z2 {cfg.azimuth_z2_deg:.0f}°",
-        f"  generation        {cfg.n_der}/4 plants, {cfg.der_fleet_mw:.0f} MW"
-        f" | control {cfg.control_mode} | storage {'on' if cfg.storage_enabled else 'off'}",
-        f"  rating method     mode {cfg.dlr_mode} "
-        f"({['static', 'ambient-adjusted', 'full weather'][cfg.dlr_mode]})",
-        "",
-        "  CONVERGENCE",
-        f"    power flow            {m['converged_pct']:6.2f} %  "
-        f"({m['steps'] - m['converged_steps']} steps failed)",
-        f"    control loop          {m['reg_converged_pct']:6.2f} %",
-        f"    max reactive error    {m['q_tracking_error_max_mvar']:6.2f} MVAr",
-        f"    curtailment retries   {counters.get('curtail_failures', 0)}",
-        "",
-        "  LINE RATING",
-        f"    mean operative        {m['rating_mean_a']:6.0f} A "
-        f"({m['rating_uplift_pct']:+.1f} % against static)",
+        rule, f"  {cfg.stem}", f"  {title}", rule,
+        f"  window      {result.index[0]:%Y-%m-%d} to {result.index[-1]:%Y-%m-%d} "
+        f"({_days(result)})",
+        f"  corridor    {cfg.conductor_label}, {C.CORRIDOR_LENGTH_KM:.0f} km, "
+        f"static rating {cfg.static_rating_a:.0f} A",
     ]
     if cfg.dlr_mode > 0:
-        cap = "none" if cfg.rating_cap_a is None else f"{cfg.rating_cap_a:.0f} A"
-        equip = "none" if cfg.equipment_rating_a is None else f"{cfg.equipment_rating_a:.0f} A"
-        lines += [
-            f"    weather alone would   {m['rating_weather_mean_a']:6.0f} A "
-            f"({m['rating_uplift_uncapped_pct']:+.1f} %)",
-            f"    ceilings              cap {cap}, series equipment {equip}",
-            f"    hours ceiling binds   {m['hours_headroom_limited']:6.1f} "
-            f"({m['headroom_limited_pct']:.1f} % of converged steps)",
-        ]
+        lines.append(f"  ceilings    {_ceilings(cfg)}")
+    lines.append(f"  generation  {cfg.n_der}/{len(cfg.der_enabled)} plants, "
+                 f"{cfg.der_fleet_mw:.0f} MW, {cfg.control_mode} control | {storage}")
+    if r is not None:
+        lines.append(f"  static run  {reference.cfg.stem} ({reference.origin})")
+    elif cfg.dlr_mode > 0:
+        lines.append("  static run  none, so no comparison")
+
+    lines += [""] + _text_rows(cfg, HEADLINE_ROWS, m, r)
+    cost_rows = [row for row in COST_ROWS if row[0] in _TEXT_COST_KEYS]
+    lines += [""] + _text_rows(cfg, cost_rows, m, r, title="TECHNICAL COST")
+    lines.append(f"  at {cfg.energy_price_eur_mwh:g} €/MWh (curtailment, losses) and "
+                 f"{cfg.reactive_price_eur_mvarh:g} €/MVArh (reactive outside window)")
+
+    if cfg.dlr_mode > 0:
+        who, share = max((("the weather", m["rating_by_weather_pct"]),
+                          ("the cap", m["rating_by_cap_pct"]),
+                          ("the series equipment", m["rating_by_equipment_pct"])),
+                         key=lambda item: item[1])
+        lines += ["", f"  Rating set by {who} {share:.1f} % of the time.",
+                  f"  The weather alone would allow a mean of {m['rating_weather_mean_a']:.0f} A "
+                  f"({m['rating_uplift_uncapped_pct']:+.0f} % on static)."]
+
+    per_day = max(days, 1e-9)
     lines += [
-        f"    corridor loading      mean {m['corridor_loading_mean_pct']:5.1f} %, "
-        f"p95 {m['corridor_loading_p95_pct']:5.1f} %",
-        f"    hours over rating     {m['hours_corridor_over_limit']:6.1f}",
-        f"    hours over {cfg.t_cond_max_c:.0f} C design  {m['hours_over_temperature']:6.1f}",
-        "",
-        "  ENERGY",
-        f"    available             {m['available_mwh']:10.1f} MWh",
-        f"    delivered             {m['delivered_mwh']:10.1f} MWh "
-        f"(capacity factor {m['capacity_factor']:.3f})",
-        f"    curtailed             {m['curtailed_mwh']:10.1f} MWh "
-        f"({m['curtailed_pct']:.2f} % of available)",
-        f"    network losses        {m['losses_mwh']:10.1f} MWh",
+        "", "  CHECKS",
+        f"    converged {m['converged_pct']:.1f} % | over rating "
+        f"{m['hours_corridor_over_limit']:.1f} h | over {cfg.t_cond_max_c:g} °C "
+        f"{m['hours_over_temperature']:.1f} h",
+        f"    voltage out of band {m['hours_voltage_high'] + m['hours_voltage_low']:.1f} h | "
+        f"export over {cfg.export_cap_mw:g} MW {m['hours_over_export_cap']:.1f} h "
+        f"(peak {m['pcc_peak_mw']:.0f} MW)",
+        f"    tap operations {m['oltc_operations'] / per_day:.1f} / day | "
+        f"reactor operations {m['reactor_operations'] / per_day:.1f} / day",
     ]
-    causes = [(c, m[f"curtailed_{c}_mwh"]) for c in
-              ("corridor", "dso_trafo", "plant", "overvoltage", "export_cap")]
-    for cause, value in causes:
-        if value > 0.01:
-            lines.append(f"      by {cause:<16s}{value:10.1f} MWh")
-
-    lines += [
-        "",
-        "  CONSTRAINTS AFTER CONTROL",
-        f"    peak export           {m['pcc_peak_mw']:6.1f} MW "
-        f"(cap {cfg.export_cap_mw:.0f} MW, {m['hours_over_export_cap']:.1f} h above)",
-        f"    hours voltage high    {m['hours_voltage_high']:6.1f}",
-        f"    hours voltage low     {m['hours_voltage_low']:6.1f}",
-        f"    hours reactive out    {m['hours_q_outside_window']:6.1f} "
-        f"(window +/-{cfg.q_window_mvar:.1f} MVAr)",
-        "",
-        "  CONTROL ACTIVITY",
-        f"    tap operations        {m['oltc_operations']:6d}"
-        f"   ({m['oltc_operations'] / max(days, 1e-9):.1f} / day)",
-        f"    reactor operations    {m['reactor_operations']:6d}"
-        f"   ({m['reactor_operations'] / max(days, 1e-9):.1f} / day)",
-        f"    control-loop writes   {m['oltc_loop_moves']:6d} tap, "
-        f"{m['reactor_loop_moves']} reactor  (solver diagnostic, not duty)",
-    ]
-
-    warnings = [
-        (counters.get("not_converged", 0), "steps did not converge"),
-        (counters.get("storage_resolve_failed", 0), "storage reconciliations failed"),
-        (counters.get("soc_clamped", 0), "steps clamped by a state-of-charge limit"),
-        (counters.get("reserve_short", 0), "steps short of contracted reserve"),
-        (counters.get("t_cond_saturated", 0), "conductor temperature solves saturated"),
-    ]
-    flagged = [(n, text) for n, text in warnings if n]
-    if flagged:
-        lines += ["", "  FLAGS"]
-        lines += [f"    {n:6d}  {text}" for n, text in flagged]
-
     if cfg.storage_enabled:
-        lines += [
-            "",
-            "  STORAGE",
-            f"    discharged            {m['storage_discharged_mwh']:10.1f} MWh "
-            f"({m['storage_cycles']:.1f} equivalent cycles)",
-            f"    charged               {m['storage_charged_mwh']:10.1f} MWh",
-            f"    delivery shortfall    {m['storage_shortfall_mwh']:10.1f} MWh "
-            f"({counters.get('headroom_clamped', 0)} steps clamped by export headroom)",
-            f"    hours reserve short   {m['hours_reserve_short']:6.1f}",
-            f"    mean state of charge  {m['storage_soc_mean_pct']:6.1f} %",
-        ]
+        lines += ["", "  STORAGE",
+                  f"    {m['storage_discharged_mwh']:.0f} MWh discharged, "
+                  f"{m['storage_charged_mwh']:.0f} MWh charged, "
+                  f"{m['storage_cycles']:.1f} cycles",
+                  f"    short of reserve {m['hours_reserve_short']:.1f} h, "
+                  f"mean state of charge {m['storage_soc_mean_pct']:.0f} %"]
+    flagged = [(counters[key], text) for key, text in _FLAGS if counters.get(key)]
+    if flagged:
+        lines += ["", "  FLAGS"] + [f"    {n:6d}  {text.lower()}" for n, text in flagged]
 
-    lines += ["", f"  runtime {m['runtime_s']:.0f} s", "=" * 74]
-    return "\n".join(lines)
+    lines += ["", f"  every table: {cfg.stem}_summary.csv", rule]
+    return "\n".join(line.rstrip() for line in lines)
 
 
-def write(cfg, result: pd.DataFrame, out_dir: Path) -> dict:
+# ── Files ────────────────────────────────────────────────────────────────────
+def write_summary(cfg, result: pd.DataFrame, out_dir: Path, reference=None) -> dict:
+    """Write the outputs that depend on the static reference, and return their paths.
+
+    The metrics file also records the run's full configuration and the
+    fingerprint its static reference is found by.
+    """
+    out_dir = Path(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    stem = cfg.stem
+    paths = {
+        "metrics": out_dir / f"{stem}_metrics.json",
+        "summary_csv": out_dir / f"{stem}_summary.csv",
+        "summary": out_dir / f"{stem}_summary.txt",
+    }
+    meta = metrics(cfg, result)
+    meta["static_key"] = static_key(cfg)
+    meta["static_reference"] = reference.cfg.stem if reference is not None else None
+    meta["config"] = to_record(cfg)
+    paths["metrics"].write_text(json.dumps(meta, indent=2), encoding="utf-8")
+    write_tables(summary_tables(cfg, result, reference), paths["summary_csv"])
+    paths["summary"].write_text(summary_text(cfg, result, reference) + "\n", encoding="utf-8")
+    return paths
+
+
+def write(cfg, result: pd.DataFrame, out_dir: Path, reference=None) -> dict:
     """Write every output file for one run and return the paths."""
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -268,13 +628,8 @@ def write(cfg, result: pd.DataFrame, out_dir: Path) -> dict:
     paths = {
         "timeseries": out_dir / f"{stem}_timeseries.csv",
         "violations": out_dir / f"{stem}_violations.csv",
-        "seasonal": out_dir / f"{stem}_seasonal.csv",
-        "metrics": out_dir / f"{stem}_metrics.json",
-        "summary": out_dir / f"{stem}_summary.txt",
     }
     result.to_csv(paths["timeseries"], lineterminator="\n")
     violations(result).to_csv(paths["violations"], lineterminator="\n")
-    seasonal(cfg, result).to_csv(paths["seasonal"], lineterminator="\n")
-    paths["metrics"].write_text(json.dumps(metrics(cfg, result), indent=2), encoding="utf-8")
-    paths["summary"].write_text(summary_text(cfg, result), encoding="utf-8")
+    paths.update(write_summary(cfg, result, out_dir, reference))
     return paths

@@ -76,13 +76,15 @@ _R50 = COND_R20_OHM_PER_KM * (1.0 + ALPHA_AL * 30.0) * COND_AC_DC_RATIO
 # It comes from the IEC 62271 standard rating series (630, 800, 1250, 1600,
 # 2000, 2500, 3150 A), so it steps rather than tracking the conductor, and a
 # line is normally built with the next size up from its own rating.
+#
+# `label` is the name the summary tables and figures give each build.
 CONDUCTOR_OPTIONS = {
     "single": dict(r_ohm_per_km=round(_R50, 4), x_ohm_per_km=0.400,
                    c_nf_per_km=9.2, max_i_ka=0.780, equipment_i_ka=1.250,
-                   bundle_n=1),
+                   bundle_n=1, label="1-Duck"),
     "twin": dict(r_ohm_per_km=round(_R50 / 2, 4), x_ohm_per_km=0.290,
                  c_nf_per_km=12.6, max_i_ka=1.560, equipment_i_ka=2.000,
-                 bundle_n=2),
+                 bundle_n=2, label="2-Duck"),
 }
 
 # Plant collector lines: a heavier 110 kV overhead lateral and a 33 kV cable.
@@ -185,6 +187,14 @@ Q_WINDOW_FRAC = 0.10            # reactive exchange window as a fraction of flee
 Q_WINDOW_CAP_MVAR = 50.0
 Q_GUARD_MVAR = 20.0             # reactive import level that releases the reactors
 Q_MONITOR_MVAR = 30.0
+
+# ── Indicative prices for the technical cost ─────────────────────────────────
+# Round placeholders, not market data: replace them with your own, or set them
+# per run with --energy-price and --reactive-price. Curtailed energy and losses
+# are both valued at the energy price; reactive energy is charged only for the
+# part exchanged outside the PCC window.
+ENERGY_PRICE_EUR_MWH = 50.0
+REACTIVE_PRICE_EUR_MVARH = 5.0
 
 # ── Storage ──────────────────────────────────────────────────────────────────
 BESS_NAME = "BESS"

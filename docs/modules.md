@@ -5,7 +5,7 @@
 | File | Purpose |
 |---|---|
 | [`__init__.py`](../src/corridor_sim/__init__.py) | Package marker and version number. |
-| [`cli.py`](../src/corridor_sim/cli.py) | The `corridor-sim` command. `run_scenario()` builds, simulates, reports and plots one scenario. |
+| [`cli.py`](../src/corridor_sim/cli.py) | The `corridor-sim` command. `run_scenario()` builds, simulates, reports and plots one scenario, with its static reference alongside. |
 | [`config.py`](../src/corridor_sim/config.py) | The immutable `Config` holding every run setting, the 21 presets, validation and the command-line parser. |
 | [`constants.py`](../src/corridor_sim/constants.py) | Every network and physical parameter: voltages, conductor data, line lengths, plant sizes, transformers, control settings, limits. Edit this for your own network. |
 | [`network.py`](../src/corridor_sim/network.py) | Builds the pandapower model of the corridor; topology is one readable function. |
@@ -17,14 +17,15 @@
 | [`curtailment.py`](../src/corridor_sim/curtailment.py) | Finds the smallest pro-rata generation cut that clears every actionable violation. |
 | [`storage.py`](../src/corridor_sim/storage.py) | Battery dispatch, state of charge and reserve accounting. |
 | [`simulate.py`](../src/corridor_sim/simulate.py) | The 15-minute time loop that ties everything together and records one row per step. |
-| [`report.py`](../src/corridor_sim/report.py) | Turns the time series into metrics, the seasonal and violation tables, and the text summary. |
-| [`plots.py`](../src/corridor_sim/plots.py) | Figures for one run (rating, voltage, rating drivers, storage) and for the scenario matrix. |
+| [`reference.py`](../src/corridor_sim/reference.py) | The static-rating run a DLR run is compared against: its settings, fingerprint and lookup for reuse. |
+| [`report.py`](../src/corridor_sim/report.py) | Turns the time series into metrics, the summary tables (CSV), the text summary and the violation table. |
+| [`plots.py`](../src/corridor_sim/plots.py) | Figures for one run (rating, ampacity by month, current duration, technical cost, voltage, rating drivers, storage) and for the scenario matrix. |
 
 ## Scripts and data
 
 | File | Purpose |
 |---|---|
-| [`scripts/run_matrix.py`](../scripts/run_matrix.py) | Runs many presets in parallel and builds the comparison table and figures. |
+| [`scripts/run_matrix.py`](../scripts/run_matrix.py) | Runs many presets in parallel, pairs each DLR run with its static run, and builds the comparison table and figures. |
 | [`data/generate.py`](../data/generate.py) | Generates the synthetic one-year dataset from a fixed seed. |
 
 ## Tests: `tests/`
@@ -32,6 +33,7 @@
 | File | Purpose |
 |---|---|
 | [`conftest.py`](../tests/conftest.py) | Shared fixtures: a default config and a solved, moderately loaded network. |
+| [`synthetic.py`](../tests/synthetic.py) | A hand-built per-step result for the report and matrix tests. |
 | [`test_config.py`](../tests/test_config.py) | Presets, validation and command-line parsing. |
 | [`test_network.py`](../tests/test_network.py) | The network builds, solves, and has the stated distances and elements. |
 | [`test_dataio.py`](../tests/test_dataio.py) | Input coverage checks, interpolation and duplicate timestamps. |
@@ -40,6 +42,7 @@
 | [`test_constraints.py`](../tests/test_constraints.py) | Each constraint level is detected and under-voltage never hides another violation. |
 | [`test_curtailment.py`](../tests/test_curtailment.py) | Curtailment clears violations, is close to minimal and is shared pro rata. |
 | [`test_storage.py`](../tests/test_storage.py) | Battery efficiency, state-of-charge limits and reserve shortfall. |
-| [`test_report.py`](../tests/test_report.py) | Metrics and summary text are computed correctly. |
-| [`test_matrix.py`](../tests/test_matrix.py) | The matrix runner collects and tabulates results without breaking on stray runs. |
-| [`test_smoke.py`](../tests/test_smoke.py) | Six-hour end-to-end runs: convergence, energy balance, ratings respected, files written. |
+| [`test_report.py`](../tests/test_report.py) | Metrics, technical cost, summary tables and text are computed correctly. |
+| [`test_reference.py`](../tests/test_reference.py) | The static reference is found only when settings, window, data and model all match. |
+| [`test_matrix.py`](../tests/test_matrix.py) | The matrix runner collects and tabulates results, and pairs DLR runs with static ones. |
+| [`test_smoke.py`](../tests/test_smoke.py) | Short end-to-end runs: convergence, energy balance, ratings respected, files written, static reference made then reused. |

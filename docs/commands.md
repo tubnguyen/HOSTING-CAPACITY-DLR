@@ -22,6 +22,13 @@ conductor, ambient-adjusted rating (mode 1), all four plants, droop control, no
 battery. A `--preset` sets a named scenario, and any flag given with it overrides
 the preset.
 
+A DLR run (mode 1 or 2) is reported against the static rating: the same study at
+mode 0 is reused from the output folder if a matching run is there, and otherwise
+simulated in a second process at the same time and saved as its own run. Matching
+means the same window, plants, storage, network settings, input data and model
+code. The static case is the slower of the two, so the first DLR run of a setup
+takes about as long as that static run; later ones reuse it.
+
 ### Scenario
 
 | Option | Values | Default | What it does |
@@ -59,6 +66,17 @@ The bearing only changes the result in mode 2.
 | `--out PATH` | folder | `runs/` | results go to `<out>/<label>/` |
 | `--label NAME` | text | auto | output name; auto is `<conductor>_der<n>_<control>_dlr<mode>_bess<0/1>` |
 | `--no-plots` | flag | plots on | skip the figures |
+| `--no-compare` | flag | compare on | skip the static run a DLR run is compared against |
+
+### Technical cost prices
+
+| Option | Values | Default | What it does |
+|---|---|---|---|
+| `--energy-price EUR` | number ≥ 0 | `50` | €/MWh for curtailed energy and network losses |
+| `--reactive-price EUR` | number ≥ 0 | `5` | €/MVArh for reactive energy outside the ±33 MVAr PCC window |
+
+Both are round placeholders for the cost columns of the summary; they change no
+simulated result.
 
 A bad flag or a dataset that does not cover the window exits with code 2 and a
 one-line message.
@@ -98,8 +116,11 @@ corridor-sim --dlr 2 --no-equipment-limit --days 365
 # what reconductoring would buy
 corridor-sim --dlr 0 --conductor twin --der WF_1,WF_2,WF_3 --days 365
 
-# your own data, a named output
+# your own data, a named output (its static reference is my_case_static)
 corridor-sim --data-dir /path/to/my_data --dlr 2 --start 2024-01-01 --days 365 --label my_case
+
+# a quick look without the static comparison, at your own prices
+corridor-sim --preset dlr2_der4 --days 3 --no-compare --energy-price 80
 ```
 
 Runs are slow: roughly 20 s per simulated day when nothing binds and 2–3 minutes
@@ -108,6 +129,9 @@ per day when the corridor curtails heavily, on one core.
 ## The whole matrix: `scripts/run_matrix.py`
 
 Runs presets in parallel, then writes `matrix_summary.csv` and the comparison figures.
+Once every run has finished, each DLR run's summary and cost figure are rewritten
+against the static preset with the same plants and storage (`dlr2_der4` against
+`static_der4`), so no static run is simulated twice.
 
 ```bash
 python scripts/run_matrix.py --days 30 --jobs 8
@@ -146,10 +170,14 @@ python data/generate.py --year 2024 --seed 20240101
 from corridor_sim.cli import run_scenario
 from corridor_sim.config import build_config
 
-cfg = build_config("dlr2_der4", days=365, data_dir="/path/to/my_data",
-                   azimuth_z1_deg=45.0, export_cap_mw=200.0, label="my_case")
-metrics, paths = run_scenario(cfg, make_plots=True, progress=True)
+if __name__ == "__main__":
+    cfg = build_config("dlr2_der4", days=365, data_dir="/path/to/my_data",
+                       azimuth_z1_deg=45.0, export_cap_mw=200.0, label="my_case")
+    metrics, paths = run_scenario(cfg, make_plots=True, progress=True, compare=True)
 ```
+
+From Python the static comparison is off unless `compare=True` is given. It starts
+a second process, so keep the call under `if __name__ == "__main__":` in a script.
 
 `build_config(preset, **fields)` applies the field defaults, then the preset, then
 your overrides, and validates the result. Every CLI flag maps to a field

@@ -74,7 +74,21 @@ All four are checked every step.
 
 Inputs of any resolution are interpolated onto the 15-minute grid.
 
-## 7. Not modelled
+## 7. DLR against static, and the technical cost
+
+* A DLR run is reported beside a static-rating run that differs in nothing else.
+  It is reused if one with the same fingerprint (settings, window, input data,
+  model code) is in the output folder, and simulated otherwise.
+* Every headline number is given for both, with the change in its own unit and in %.
+* **Time above 1-Duck static:** share of steps the corridor current exceeds 780 A,
+  i.e. how long a statically rated single conductor would be overloaded by the
+  same flow.
+* **Technical cost:** curtailed energy, network losses (all lines and
+  transformers) and reactive energy exchanged at the PCC outside the ±33 MVAr
+  window. Priced at an energy price (curtailment, losses) and a reactive energy
+  price; both are placeholders.
+
+## 8. Not modelled
 
 * N-1 contingencies, protection, stability, dynamics.
 * Sag and clearance (the 80 °C design temperature stands in).

@@ -13,6 +13,10 @@ from pathlib import Path
 
 import pandas as pd
 import pytest
+from synthetic import result_frame
+
+from corridor_sim import report
+from corridor_sim.config import build_config
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
@@ -116,24 +120,33 @@ def test_every_preset_the_matrix_would_run_is_buildable():
 
 def test_table_columns_exist_in_real_metrics():
     """TABLE_COLUMNS is a hand-written list; it drifts silently otherwise."""
-    from corridor_sim.config import build_config
-    from corridor_sim.report import metrics
-
-    frame = pd.DataFrame({
-        "converged": [True], "available_total_mw": [10.0], "curtailed_total_mw": [1.0],
-        "p_WF_1_mw": [9.0], "p_WF_2_mw": [0.0], "p_WF_3_mw": [0.0], "p_PV_1_mw": [0.0],
-        "loading_Z1_pct": [50.0], "loading_Z2_pct": [50.0],
-        "rating_Z1_a": [1170.0], "rating_Z2_a": [1170.0],
-        "rating_Z1_weather_a": [2000.0], "rating_Z2_weather_a": [2000.0],
-        "rating_headroom_limited": [1],
-        "t_cond_Z1_c": [40.0], "t_cond_Z2_c": [40.0],
-        "pcc_p_mw": [100.0], "viol_L1": [0], "viol_L2": [0], "q_within_window": [1],
-        "loss_line_mw": [1.0], "loss_trafo_mw": [0.5],
-        "oltc_operations": [1], "reactor_operations": [0],
-        "oltc_loop_moves": [3], "reactor_loop_moves": [2],
-        "q_tracking_error_mvar": [0.1], "reg_converged": [True],
-        "curtail_cause": ["corridor"],
-    }, index=pd.date_range("2024-01-01", periods=1, freq="15min", tz="UTC"))
-    produced = set(metrics(build_config("dlr2_der4"), frame))
+    produced = set(report.metrics(build_config("dlr2_der4"), result_frame(1)))
     declared = set(run_matrix.TABLE_COLUMNS) - {"scenario"}
     assert declared <= produced, f"table columns not produced by metrics(): {declared - produced}"
+
+
+def test_dlr_runs_are_paired_with_the_static_run_that_shares_their_key():
+    table = pd.DataFrame([
+        {"scenario": "static_der4", "dlr_mode": 0, "static_key": "a"},
+        {"scenario": "dlr1_der4", "dlr_mode": 1, "static_key": "a"},
+        {"scenario": "dlr2_der4", "dlr_mode": 2, "static_key": "a"},
+        {"scenario": "dlr2_der2", "dlr_mode": 2, "static_key": "b"},
+        {"scenario": "old_run", "dlr_mode": 2, "static_key": None},
+    ])
+    assert run_matrix.static_partners(table) == {"dlr1_der4": "static_der4",
+                                                 "dlr2_der4": "static_der4"}
+
+
+def test_build_outputs_compares_each_dlr_run_with_its_static_partner(tmp_path):
+    """Matrix runs are made without a comparison and paired once all have finished."""
+    out = tmp_path / "runs"
+    for preset, static in (("static_der4", True), ("dlr2_der4", False)):
+        cfg = build_config(preset, days=1, label=preset, out_dir=out)
+        report.write(cfg, result_frame(8, static=static), out / preset)
+    table = run_matrix.build_outputs(out, tmp_path / "figures", redraw=False, make_plots=False)
+
+    summary = (out / "dlr2_der4" / "dlr2_der4_summary.csv").read_text(encoding="utf-8-sig")
+    assert "HEADLINE: DLR VS STATIC" in summary and "static_der4" in summary
+    row = table.set_index("scenario").loc["dlr2_der4"]
+    assert row["static_reference"] == "static_der4"
+    assert "config" not in table.columns, "a run's settings are not a table column"

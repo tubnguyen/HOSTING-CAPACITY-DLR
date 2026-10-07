@@ -6,10 +6,12 @@ a global, so a run is fully described by the Config it was given.
 from __future__ import annotations
 
 import argparse
+import dataclasses
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from types import MappingProxyType
+from typing import NamedTuple
 
 import pandas as pd
 
@@ -89,6 +91,10 @@ class Config:
     out_dir: Path = Path("runs")
     label: str = ""
 
+    # Reporting: prices for the technical cost, which change no result
+    energy_price_eur_mwh: float = C.ENERGY_PRICE_EUR_MWH
+    reactive_price_eur_mvarh: float = C.REACTIVE_PRICE_EUR_MVARH
+
     # ── Derived ──────────────────────────────────────────────────────────────
     @property
     def pv_mode(self) -> str:
@@ -113,6 +119,11 @@ class Config:
     @property
     def bundle_n(self) -> int:
         return self.line["bundle_n"]
+
+    @property
+    def conductor_label(self) -> str:
+        """Name of the build in tables and figures, e.g. 1-Duck."""
+        return self.line["label"]
 
     @property
     def static_rating_a(self) -> float:
@@ -321,10 +332,46 @@ def validate(cfg: Config) -> None:
             "conductor height above displacement must exceed the roughness length")
     require(cfg.days is None or cfg.days > 0, "days must be positive")
     require(cfg.end_ts > cfg.start_ts, "end must be after start")
+    require(cfg.energy_price_eur_mwh >= 0 and cfg.reactive_price_eur_mvarh >= 0,
+            "prices must not be negative")
+
+
+def to_record(cfg: Config) -> dict:
+    """Every field of a Config as plain JSON values, so a run can be rebuilt."""
+    record = {}
+    for f in dataclasses.fields(cfg):
+        value = getattr(cfg, f.name)
+        if f.name == "der_enabled":
+            value = [n for n in DER_NAMES if value.get(n, False)]
+        elif isinstance(value, Path):
+            value = str(value)
+        record[f.name] = value
+    return record
+
+
+def from_record(record: Mapping) -> Config:
+    """Rebuild the Config a run was made with from its saved record.
+
+    Keys this version does not know are dropped and fields the record lacks
+    take their defaults, so a record written by an older version still loads.
+    """
+    known = {f.name for f in dataclasses.fields(Config)}
+    fields = {k: v for k, v in record.items() if k in known}
+    for name in ("data_dir", "out_dir"):
+        if name in fields:
+            fields[name] = Path(fields[name])
+    return build_config(**fields)
+
+
+class RunOptions(NamedTuple):
+    """Command-line choices about what a run produces, not what it models."""
+
+    plots: bool = True
+    compare: bool = True        # report a DLR run against a static-rating run
 
 
 def parse_args(argv=None):
-    """Parse the command line into (Config, make_plots)."""
+    """Parse the command line into (Config, RunOptions)."""
     p = argparse.ArgumentParser(
         prog="corridor-sim",
         description="Quasi-static AC power-flow study of a DLR-enabled export corridor")
@@ -359,7 +406,15 @@ def parse_args(argv=None):
     p.add_argument("--data-dir", dest="data_dir", type=Path)
     p.add_argument("--out", dest="out_dir", type=Path)
     p.add_argument("--label", help="output filename stem")
+    p.add_argument("--energy-price", dest="energy_price_eur_mwh", type=float,
+                   help="EUR/MWh for curtailed energy and losses "
+                        f"(default {C.ENERGY_PRICE_EUR_MWH:g})")
+    p.add_argument("--reactive-price", dest="reactive_price_eur_mvarh", type=float,
+                   help="EUR/MVArh for reactive energy outside the PCC window "
+                        f"(default {C.REACTIVE_PRICE_EUR_MVARH:g})")
     p.add_argument("--no-plots", dest="plots", action="store_false", default=True)
+    p.add_argument("--no-compare", dest="compare", action="store_false", default=True,
+                   help="skip the static-rating run a DLR run is compared against")
     a = p.parse_args(argv)
 
     # An unset flag means "do not override", so None values are dropped here
@@ -368,7 +423,7 @@ def parse_args(argv=None):
     # parsed flag, not by searching argv for its text, because argparse also
     # accepts an unambiguous prefix such as --no-rating.
     over = {k: v for k, v in vars(a).items()
-            if k not in {"preset", "der", "plots", "azimuth", "no_rating_cap"}
+            if k not in {"preset", "der", "plots", "compare", "azimuth", "no_rating_cap"}
             and v is not None}
     if a.no_rating_cap:
         over["dlr_cap_ratio"] = None
@@ -380,4 +435,4 @@ def parse_args(argv=None):
         over["der_enabled"] = [s.strip() for s in a.der.split(",") if s.strip()]
     if a.end is not None:
         over["days"] = None
-    return build_config(a.preset, **over), a.plots
+    return build_config(a.preset, **over), RunOptions(plots=a.plots, compare=a.compare)

@@ -8,6 +8,7 @@ import pytest
 from corridor_sim import dataio, network, plots, report, simulate
 from corridor_sim.cli import main, run_scenario
 from corridor_sim.config import build_config
+from corridor_sim.reference import Reference, static_config
 
 HOURS = 6
 
@@ -146,17 +147,54 @@ def test_reports_and_figures_are_written(tmp_path):
     metrics, paths = run_scenario(cfg, make_plots=True, progress=False)
     for path in paths.values():
         assert path.exists() and path.stat().st_size > 0
-    assert json.loads(paths["metrics"].read_text())["scenario"] == cfg.stem
-    figures = list((tmp_path / cfg.stem / "figures").glob("*.png"))
-    assert len(figures) >= 3
-    assert all(f.stat().st_size > 5000 for f in figures)
+    assert set(paths) == {"timeseries", "violations", "metrics", "summary_csv", "summary"}
+    meta = json.loads(paths["metrics"].read_text())
+    assert meta["scenario"] == cfg.stem
+    assert meta["config"]["dlr_mode"] == 2 and meta["static_key"]
+    figures = {f.name for f in (tmp_path / cfg.stem / "figures").glob("*.png")}
+    for name in ("rating", "ampacity", "duration", "voltage", "rating_drivers", "storage"):
+        assert f"{cfg.stem}_{name}.png" in figures
+    assert all(f.stat().st_size > 5000 for f in (tmp_path / cfg.stem / "figures").glob("*.png"))
 
 
-def test_seasonal_and_violation_tables(full_run):
+def test_summary_tables_and_violations(full_run):
     cfg, result = full_run
-    assert not report.seasonal(cfg, result).empty
+    tables = report.summary_tables(cfg, result)
+    for title in ("RUN", "HEADLINE", "TECHNICAL COST", "LINE RATING", "RATING SET BY",
+                  "OPERATIVE AMPACITY BY MONTH", "CURRENT DURATION", "CHECKS", "STORAGE"):
+        assert title in tables and not tables[title].empty, title
     report.violations(result)          # must not raise on a clean window
     assert "curtailed" in report.summary_text(cfg, result).lower()
+
+
+def test_the_cost_figure_is_drawn_only_against_a_reference(full_run, tmp_path):
+    """A cost figure left from an earlier run would show a comparison never made."""
+    cfg, result = full_run
+    cost = tmp_path / f"{cfg.stem}_cost.png"
+    plots.run_figures(cfg, result, tmp_path, Reference(static_config(cfg), result, "reused"))
+    assert cost.exists() and cost.stat().st_size > 5000
+    plots.run_figures(cfg, result, tmp_path)
+    assert not cost.exists()
+
+
+def test_a_dlr_run_is_compared_with_a_static_run_made_alongside_then_reused(tmp_path):
+    """The static reference runs in a second process once, and is reused after."""
+    cfg = build_config("dlr2_der4", days=None, start="2024-03-01",
+                       end="2024-03-01T02:00:00", out_dir=tmp_path)
+    run_scenario(cfg, make_plots=False, progress=False, compare=True)
+    static = static_config(cfg)
+    static_series = tmp_path / static.stem / f"{static.stem}_timeseries.csv"
+    assert static_series.exists(), "the reference is written as a run of its own"
+    meta = json.loads((tmp_path / cfg.stem / f"{cfg.stem}_metrics.json").read_text())
+    assert meta["static_reference"] == static.stem
+    summary = (tmp_path / cfg.stem / f"{cfg.stem}_summary.csv").read_text(encoding="utf-8-sig")
+    assert "HEADLINE: DLR VS STATIC" in summary and static.stem in summary
+
+    written = static_series.stat().st_mtime_ns
+    run_scenario(cfg, make_plots=False, progress=False, compare=True)
+    assert static_series.stat().st_mtime_ns == written, "a matching reference is reused"
+    summary = (tmp_path / cfg.stem / f"{cfg.stem}_summary.csv").read_text(encoding="utf-8-sig")
+    assert "(reused)" in summary
 
 
 def test_command_line_entry_point(tmp_path):
