@@ -68,12 +68,22 @@ Each run writes to `runs/<label>/`:
 
 | File | Contents |
 |---|---|
+| `<label>_summary.csv` | the summary as tables: DLR vs static (change in units and %), technical cost, line rating, ampacity by month, current duration, checks, storage |
+| `<label>_summary.txt` | the same headline numbers as a short text report, also printed |
 | `<label>_timeseries.csv` | every quantity per step: flows, voltages, ratings and what bound them, conductor temperature, curtailment and its cause, tap and reactor operations |
 | `<label>_violations.csv` | every step still violating a limit after control |
-| `<label>_seasonal.csv` | energy, curtailment and rating by season |
-| `<label>_metrics.json` | available, delivered and curtailed energy, ratings, hours over each limit |
-| `<label>_summary.txt` | figures as a text report |
-| `figures/` | rating vs current, voltage profile, rating drivers (mode 2), battery operation |
+| `<label>_metrics.json` | every headline number, plus the run's full settings |
+| `figures/` | rating vs current, ampacity by month, current duration, technical cost, voltage profile, rating drivers (mode 2), battery operation |
+
+A DLR run is compared with a static-rating run that is identical in every other respect.
+If a matching one is already in the output folder it is reused; otherwise it is
+simulated alongside, in a second process, and saved as a run of its own. The
+static case curtails at many more steps, so the first DLR run of a setup takes
+about as long as that static run (`--no-compare` skips it).
+
+The technical cost is curtailed energy, network losses and reactive energy
+exchanged outside the PCC window. It is given in MWh and MVArh and, at indicative
+prices (`--energy-price`, `--reactive-price`), in k€.
 
 The matrix runner adds `matrix_summary.csv` and comparison figures.
 
@@ -84,8 +94,8 @@ git clone https://github.com/tubnguyen/HOSTING-CAPACITY-DLR
 cd HOSTING-CAPACITY-DLR
 pip install -e ".[dev]"
 
-corridor-sim --preset dlr2_der4_bess --days 3      # full-weather DLR, all plants, battery
-corridor-sim --preset static_der4 --days 3         # same window, static rating
+corridor-sim --preset dlr2_der4_bess --days 3      # full-weather DLR vs static, all plants, battery
+corridor-sim --preset static_der4 --days 3         # static rating only
 python scripts/run_matrix.py --days 30 --jobs 8    # all 21 presets in parallel
 ```
 

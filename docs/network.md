@@ -38,6 +38,7 @@ graph LR
 
 | | Single | Twin bundle |
 |---|---|---|
+| Name in outputs | 1-Duck | 2-Duck |
 | AC resistance at 50 °C | 0.0973 Ω/km | 0.0486 Ω/km |
 | Reactance | 0.400 Ω/km | 0.290 Ω/km |
 | Static rating | 780 A (149 MVA) | 1560 A (297 MVA) |

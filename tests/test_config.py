@@ -1,13 +1,22 @@
 """Configuration, presets and validation."""
 from __future__ import annotations
 
+import json
 import subprocess
 import sys
 
 import pytest
 
 from corridor_sim import constants as C
-from corridor_sim.config import DER_NAMES, PRESETS, build_config, normalise_der, parse_args
+from corridor_sim.config import (
+    DER_NAMES,
+    PRESETS,
+    build_config,
+    from_record,
+    normalise_der,
+    parse_args,
+    to_record,
+)
 
 
 def test_every_preset_is_valid():
@@ -45,6 +54,7 @@ def test_unknown_plant_name_is_rejected():
     {"export_cap_basis": "guess"},
     {"dlr_cap_ratio": 0.8},
     {"days": -5},
+    {"energy_price_eur_mwh": -1.0},
 ])
 def test_bad_settings_fail_fast(override):
     with pytest.raises(ValueError):
@@ -146,3 +156,37 @@ def test_azimuth_flags_set_the_zone_bearings():
     assert default.zone_azimuth_deg == C.DLR_ZONE_AZIMUTH_DEG
     with pytest.raises(SystemExit):
         parse_args(["--azimuth", "110"])
+
+
+def test_run_options_come_from_the_command_line():
+    _, options = parse_args([])
+    assert options.plots and options.compare
+    _, options = parse_args(["--no-compare", "--no-plots"])
+    assert not options.plots and not options.compare
+
+
+def test_prices_for_the_technical_cost_can_be_set():
+    cfg, _ = parse_args(["--energy-price", "80", "--reactive-price", "2.5"])
+    assert cfg.energy_price_eur_mwh == pytest.approx(80.0)
+    assert cfg.reactive_price_eur_mvarh == pytest.approx(2.5)
+    default, _ = parse_args([])
+    assert default.energy_price_eur_mwh == C.ENERGY_PRICE_EUR_MWH
+
+
+def test_a_saved_record_rebuilds_the_same_configuration():
+    """The metrics file records the run's settings; reading them back must be exact."""
+    cfg = build_config("dlr2_der4_bess", days=3, label="case", export_cap_mw=200.0,
+                       der_enabled=["WF_1", "PV_1"], azimuth_z1_deg=45.0)
+    assert from_record(json.loads(json.dumps(to_record(cfg)))) == cfg
+
+
+def test_a_record_from_another_version_still_loads():
+    record = to_record(build_config("dlr1_der2"))
+    record["a_setting_from_the_future"] = 1
+    del record["energy_price_eur_mwh"]
+    assert from_record(record).energy_price_eur_mwh == C.ENERGY_PRICE_EUR_MWH
+
+
+def test_conductor_labels_name_the_builds():
+    assert build_config(conductor="single").conductor_label == "1-Duck"
+    assert build_config(conductor="twin").conductor_label == "2-Duck"

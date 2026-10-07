@@ -167,8 +167,11 @@ def _storage_columns(cfg, phase, soc_mwh, p_realised, clamped, reserve, shortfal
     }
 
 
-def run(cfg, net, buses, inputs, progress=True) -> pd.DataFrame:
-    """Run the full simulation and return one row per timestep."""
+def run(cfg, net, buses, inputs, progress=True, label="") -> pd.DataFrame:
+    """Run the full simulation and return one row per timestep.
+
+    `label` prefixes the progress lines, for two runs sharing one console.
+    """
     idx = NetIndex.build(net, buses)
     index = inputs["index"]
     rating_weather = inputs["rating_weather"]
@@ -318,7 +321,8 @@ def run(cfg, net, buses, inputs, progress=True) -> pd.DataFrame:
 
         if progress and (i + 1) % 960 == 0:
             done = (i + 1) / len(index)
-            print(f"    {done:5.0%}  {i + 1:6d}/{len(index)} steps  "
+            prefix = f"{label:<7s}" if label else ""
+            print(f"    {prefix}{done:5.0%}  {i + 1:6d}/{len(index)} steps  "
                   f"{time.time() - t0:5.0f} s", flush=True)
 
     result = pd.DataFrame(rows, index=index)

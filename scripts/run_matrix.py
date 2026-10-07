@@ -10,6 +10,7 @@ serial, so giving every worker its own thread pool only creates contention.
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import json
 import os
 import sys
@@ -22,9 +23,10 @@ sys.path.insert(0, str(ROOT / "src"))
 
 import pandas as pd  # noqa: E402
 
-from corridor_sim import plots  # noqa: E402
+from corridor_sim import plots, report  # noqa: E402
 from corridor_sim.cli import run_scenario  # noqa: E402
-from corridor_sim.config import PRESETS, Config, build_config  # noqa: E402
+from corridor_sim.config import PRESETS, Config, build_config, from_record  # noqa: E402
+from corridor_sim.reference import Reference, load_timeseries, static_config  # noqa: E402
 
 for _var in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS",
              "NUMEXPR_NUM_THREADS"):
@@ -32,11 +34,12 @@ for _var in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS",
 
 TABLE_COLUMNS = [
     "scenario", "conductor", "dlr_mode", "n_der", "fleet_mw", "storage",
-    "available_mwh", "delivered_mwh", "curtailed_mwh", "curtailed_pct",
+    "available_mwh", "delivered_mwh", "curtailed_mwh", "curtailed_pct", "net_export_mwh",
     "rating_mean_a", "rating_uplift_pct", "rating_weather_mean_a",
-    "rating_uplift_uncapped_pct", "headroom_limited_pct", "corridor_loading_p95_pct",
-    "hours_corridor_over_limit", "pcc_peak_mw", "hours_over_export_cap",
-    "hours_voltage_high", "hours_voltage_low", "losses_mwh",
+    "rating_uplift_uncapped_pct", "headroom_limited_pct", "above_single_static_pct",
+    "corridor_loading_p95_pct", "hours_corridor_over_limit", "pcc_peak_mw",
+    "hours_over_export_cap", "hours_voltage_high", "hours_voltage_low", "losses_mwh",
+    "reactive_outside_window_mvarh", "technical_cost_keur",
     "converged_pct", "reg_converged_pct", "runtime_s",
 ]
 
@@ -47,7 +50,9 @@ def _run_one(args) -> dict:
                        data_dir=Path(data_dir), label=preset)
     t0 = time.time()
     try:
-        metrics, _ = run_scenario(cfg, make_plots=make_plots, progress=False)
+        # No comparison here: the static runs are part of the matrix, and each
+        # DLR run is paired with its own once every run has finished.
+        metrics, _ = run_scenario(cfg, make_plots=make_plots, progress=False, compare=False)
         metrics["status"] = "ok"
     except Exception as exc:                          # keep the matrix going
         metrics = {"scenario": preset, "status": f"failed: {type(exc).__name__}: {exc}"}
@@ -75,6 +80,7 @@ def collect(out_dir: Path) -> pd.DataFrame:
         if not all(k in row for k in REQUIRED_METRICS):
             print(f"  skipping {path}: not a completed run", file=sys.stderr)
             continue
+        row.pop("config", None)             # the run's settings, not a table column
         rows.append(row)
     if not rows:
         raise FileNotFoundError(f"no metrics found under {out_dir}")
@@ -89,7 +95,33 @@ def _load_series(out_dir: Path, scenario: str):
     path = out_dir / scenario / f"{scenario}_timeseries.csv"
     if not path.exists():
         return None
-    return pd.read_csv(path, index_col=0, parse_dates=True)
+    return load_timeseries(path)
+
+
+def _saved_config(out_dir: Path, scenario: str) -> Config | None:
+    """The exact configuration a run used, if its metrics file recorded one."""
+    path = out_dir / scenario / f"{scenario}_metrics.json"
+    try:
+        record = json.loads(path.read_text(encoding="utf-8")).get("config")
+        return from_record(record) if record else None
+    except (OSError, json.JSONDecodeError, TypeError, ValueError):
+        return None
+
+
+def static_partners(table: pd.DataFrame) -> dict:
+    """Map each DLR scenario to the static scenario it is compared against.
+
+    Paired by the static-reference fingerprint every run records, so a DLR run
+    is only ever set beside a static run with the same window, plants,
+    storage, data and model.
+    """
+    if "static_key" not in table.columns:
+        return {}
+    static = table[(table["dlr_mode"] == 0) & table["static_key"].notna()]
+    by_key = dict(zip(static["static_key"], static["scenario"], strict=True))
+    return {row["scenario"]: by_key[row["static_key"]]
+            for _, row in table.iterrows()
+            if row["dlr_mode"] > 0 and row.get("static_key") in by_key}
 
 
 def config_for(row) -> Config:
@@ -112,12 +144,16 @@ def config_for(row) -> Config:
         label=str(row["scenario"]))
 
 
-def build_outputs(out_dir: Path, figures_dir: Path, redraw: bool = True) -> pd.DataFrame:
-    """Write the comparison table and every figure, from the saved time series."""
+def build_outputs(out_dir: Path, figures_dir: Path, redraw: bool = True,
+                  make_plots: bool = True) -> pd.DataFrame:
+    """Write the comparison table and every figure, from the saved time series.
+
+    Each DLR run with a static partner in the matrix gets its summary rewritten
+    against that partner, and its cost figure drawn when figures are on.
+    `redraw` redraws every run's figures as well.
+    """
     table = collect(out_dir)
     figures_dir.mkdir(parents=True, exist_ok=True)
-    table.to_csv(out_dir / "matrix_summary.csv", index=False, lineterminator="\n")
-
     plots.curtailment_matrix(table, figures_dir / "curtailment_matrix.png")
 
     # Loading duration curve needs the per-step results of the three rating
@@ -132,13 +168,34 @@ def build_outputs(out_dir: Path, figures_dir: Path, redraw: bool = True) -> pd.D
     if len(runs) >= 2:
         plots.loading_duration(runs, figures_dir / "loading_duration.png")
 
-    if redraw:
-        for _, row in table.iterrows():
-            result = _load_series(out_dir, row["scenario"])
-            if result is None:
-                continue
-            plots.run_figures(config_for(row), result,
-                              out_dir / row["scenario"] / "figures")
+    partners = static_partners(table)
+    for _, row in table.iterrows():
+        scenario = row["scenario"]
+        partner = partners.get(scenario)
+        if partner is None and not redraw:
+            continue
+        result = _load_series(out_dir, scenario)
+        if result is None:
+            continue
+        cfg = _saved_config(out_dir, scenario) or config_for(row)
+        ref = None
+        static_result = _load_series(out_dir, partner) if partner else None
+        if static_result is not None:
+            # Built from the DLR run's own settings, so both sides of the
+            # comparison are priced alike.
+            ref_cfg = dataclasses.replace(static_config(cfg), label=partner)
+            ref = Reference(ref_cfg, static_result, "reused")
+            report.write_summary(cfg, result, out_dir / scenario, ref)
+        figures = out_dir / scenario / "figures"
+        if redraw:
+            plots.run_figures(cfg, result, figures, ref)
+        elif ref is not None and make_plots:
+            figures.mkdir(parents=True, exist_ok=True)
+            plots.technical_cost(cfg, result, ref, figures / f"{cfg.stem}_cost.png")
+
+    # Collected again: the pairing above records each run's static partner.
+    table = collect(out_dir)
+    table.to_csv(out_dir / "matrix_summary.csv", index=False, lineterminator="\n")
     return table
 
 
@@ -221,7 +278,7 @@ def main(argv=None) -> int:
 
     # Each worker has already drawn its own figures, or skipped them under
     # --no-plots, so only the comparison figures are left to build here.
-    table = build_outputs(args.out, args.figures, redraw=False)
+    table = build_outputs(args.out, args.figures, redraw=False, make_plots=args.plots)
     print(_headline(table))
     print(f"\n  table   -> {args.out / 'matrix_summary.csv'}")
     print(f"  figures -> {args.figures}")
