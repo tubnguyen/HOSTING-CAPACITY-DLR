@@ -30,6 +30,7 @@ def test_a_dlr_run_and_its_static_configuration_share_a_key():
     {"equipment_limit": False},
     {"label": "my_case"},
     {"energy_price_eur_mwh": 90.0},
+    {"dlr_wind_factor": 0.8},
 ])
 def test_settings_a_static_run_ignores_leave_the_key_alone(override, tmp_path):
     base = build_config("dlr2_der4", days=3)

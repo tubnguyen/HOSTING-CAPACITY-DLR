@@ -55,6 +55,8 @@ def test_unknown_plant_name_is_rejected():
     {"dlr_cap_ratio": 0.8},
     {"days": -5},
     {"energy_price_eur_mwh": -1.0},
+    {"dlr_wind_factor": 0.0},
+    {"dlr_wind_factor": 1.5},
 ])
 def test_bad_settings_fail_fast(override):
     with pytest.raises(ValueError):
@@ -158,11 +160,29 @@ def test_azimuth_flags_set_the_zone_bearings():
         parse_args(["--azimuth", "110"])
 
 
-def test_run_options_come_from_the_command_line():
+def test_a_run_reports_itself_alone_unless_told_to_compare():
+    """The static case is slow to simulate, so it is only run when asked for."""
     _, options = parse_args([])
-    assert options.plots and options.compare
-    _, options = parse_args(["--no-compare", "--no-plots"])
-    assert not options.plots and not options.compare
+    assert options.plots and not options.compare
+    _, options = parse_args(["--compare", "--no-plots"])
+    assert not options.plots and options.compare
+
+
+def test_defaults_droop_45_degree_bearings_and_a_2x_cap():
+    cfg, _ = parse_args([])
+    assert cfg.control_mode == "droop" and cfg.pv_mode == "droop"
+    assert cfg.storage_q_mode == "droop"
+    assert all(PRESETS[name]["control_mode"] == "droop" for name in PRESETS)
+    assert cfg.zone_azimuth_deg == {"Z1": 45.0, "Z2": 45.0}
+    assert cfg.rating_cap_a == pytest.approx(2 * cfg.static_rating_a)
+    assert cfg.equipment_rating_a > cfg.rating_cap_a, "the cap, not the switchgear, limits"
+
+
+def test_wind_factor_from_the_command_line():
+    cfg, _ = parse_args(["--wind-factor", "0.6"])
+    assert cfg.dlr_wind_factor == pytest.approx(0.6)
+    default, _ = parse_args([])
+    assert default.dlr_wind_factor == C.DLR_WIND_FACTOR
 
 
 def test_prices_for_the_technical_cost_can_be_set():

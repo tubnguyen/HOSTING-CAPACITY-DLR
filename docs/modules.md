@@ -5,7 +5,7 @@
 | File | Purpose |
 |---|---|
 | [`__init__.py`](../src/corridor_sim/__init__.py) | Package marker and version number. |
-| [`cli.py`](../src/corridor_sim/cli.py) | The `corridor-sim` command. `run_scenario()` builds, simulates, reports and plots one scenario, with its static reference alongside. |
+| [`cli.py`](../src/corridor_sim/cli.py) | The `corridor-sim` command. `run_scenario()` builds, simulates, reports and plots one scenario, and on request its static reference alongside. |
 | [`config.py`](../src/corridor_sim/config.py) | The immutable `Config` holding every run setting, the 21 presets, validation and the command-line parser. |
 | [`constants.py`](../src/corridor_sim/constants.py) | Every network and physical parameter: voltages, conductor data, line lengths, plant sizes, transformers, control settings, limits. Edit this for your own network. |
 | [`network.py`](../src/corridor_sim/network.py) | Builds the pandapower model of the corridor; topology is one readable function. |
@@ -18,8 +18,8 @@
 | [`storage.py`](../src/corridor_sim/storage.py) | Battery dispatch, state of charge and reserve accounting. |
 | [`simulate.py`](../src/corridor_sim/simulate.py) | The 15-minute time loop that ties everything together and records one row per step. |
 | [`reference.py`](../src/corridor_sim/reference.py) | The static-rating run a DLR run is compared against: its settings, fingerprint and lookup for reuse. |
-| [`report.py`](../src/corridor_sim/report.py) | Turns the time series into metrics, the summary tables (CSV), the text summary and the violation table. |
-| [`plots.py`](../src/corridor_sim/plots.py) | Figures for one run (rating, ampacity by month, current duration, technical cost, voltage, rating drivers, storage) and for the scenario matrix. |
+| [`report.py`](../src/corridor_sim/report.py) | Turns the time series into metrics, the summary CSV of network, cost and check tables, the console summary and the violation table. |
+| [`plots.py`](../src/corridor_sim/plots.py) | Figures for one run (corridor current, current duration, power flow, current along the corridor, voltage, technical cost, rating drivers, storage) and for the scenario matrix. |
 
 ## Scripts and data
 

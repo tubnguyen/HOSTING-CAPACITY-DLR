@@ -27,7 +27,7 @@ from .dataio import FILES
 # Runs that differ only in these share one static reference.
 _NOT_IN_STATIC_KEY = {
     "dlr_mode", "dlr_cap_ratio", "equipment_limit", "azimuth_z1_deg", "azimuth_z2_deg",
-    "conductor_height_m", "roughness_m", "displacement_m", "low_wind_ms",
+    "conductor_height_m", "roughness_m", "displacement_m", "low_wind_ms", "dlr_wind_factor",
     "site_elevation_m", "t_cond_max_c", "start", "days", "end", "data_dir", "out_dir",
     "label", "energy_price_eur_mwh", "reactive_price_eur_mvarh",
 }

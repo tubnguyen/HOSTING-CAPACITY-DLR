@@ -78,7 +78,8 @@ def run_scenario(cfg, make_plots: bool = True, progress: bool = True, compare: b
     that differs in nothing else. A matching run already under cfg.out_dir is
     reused; otherwise one is simulated in a second process while this one
     runs, and written to its own folder, where the next DLR run with the same
-    settings finds it. The command line compares unless told --no-compare.
+    settings finds it. On the command line this is --compare; without it a
+    run reports itself alone.
     """
     net, buses = network.build(cfg)
     if progress:
@@ -102,8 +103,8 @@ def run_scenario(cfg, make_plots: bool = True, progress: bool = True, compare: b
             pool, pending = _start_reference(ref_cfg, make_plots, progress)
             if progress:
                 how = "alongside this run" if pool is not None else "after this run"
-                print(f"  static    simulating {ref_cfg.stem} {how}, for the comparison "
-                      f"(--no-compare skips it)", flush=True)
+                print(f"  static    simulating {ref_cfg.stem} {how}, for the comparison",
+                      flush=True)
         elif progress:
             print(f"  static    reusing {ref.cfg.stem}, same settings, data and model")
 

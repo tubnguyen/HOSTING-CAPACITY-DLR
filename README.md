@@ -13,8 +13,9 @@ Power flow analysis by simulates a period of a 110 kV generation heavy corridor 
 * **AC power flow** every step with [pandapower](https://www.pandapower.org/).
 * **Line rating** from the IEEE 738 heat balance in three modes: static (0),
   ambient-adjusted (1: measured temperature and sun) and full weather (2: plus wind).
-* **Export cap** on the dynamic rating: an administrative cap (1.5 × static)
-  and the substation equipment rating. The tool records which limit bound at every step.
+* **Ceilings** on the dynamic rating: an administrative cap (2 × static, the static
+  rating of a twin-bundle reinforcement) and the substation equipment rating. The tool
+  records which limit bound at every step.
 * **Voltage control** by tap changers, a shunt reactor and Q(V) droop.
 * **Constraint checks** for over-voltage, under-voltage, thermal overload and the export cap.
 * **Minimal curtailment**: proportional curtailment wherever DLR cannot help.
@@ -68,22 +69,22 @@ Each run writes to `runs/<label>/`:
 
 | File | Contents |
 |---|---|
-| `<label>_summary.csv` | the summary as tables: DLR vs static (change in units and %), technical cost, line rating, ampacity by month, current duration, checks, storage |
-| `<label>_summary.txt` | the same headline numbers as a short text report, also printed |
-| `<label>_timeseries.csv` | every quantity per step: flows, voltages, ratings and what bound them, conductor temperature, curtailment and its cause, tap and reactor operations |
+| `<label>_summary.csv` | the summary as titled tables: headline, corridor current, power flow by segment, generation by plant, grid interface, voltage, transformer loading, technical cost, monthly (or period) means, current duration, checks, storage |
+| `<label>_timeseries.csv` | every quantity per step: flows, voltages, ratings and what bound them, the current before and after curtailment, conductor temperature, curtailment and its cause, tap and reactor operations |
 | `<label>_violations.csv` | every step still violating a limit after control |
 | `<label>_metrics.json` | every headline number, plus the run's full settings |
-| `figures/` | rating vs current, ampacity by month, current duration, technical cost, voltage profile, rating drivers (mode 2), battery operation |
+| `figures/` | corridor current (15-minute series and monthly means), current duration, power flow, current along the corridor, voltage, technical cost, rating drivers (mode 2), battery operation |
 
-A DLR run is compared with a static-rating run that is identical in every other respect.
-If a matching one is already in the output folder it is reused; otherwise it is
-simulated alongside, in a second process, and saved as a run of its own. The
-static case curtails at many more steps, so the first DLR run of a setup takes
-about as long as that static run (`--no-compare` skips it).
+The corridor current is shown three ways: **pushed** (every plant at full available
+output, before curtailment), **carried** (after curtailment) and the **ratings** it is
+held to (static 780 A, the DLR heat balance and operative rating, the 1560 A
+reinforcement). The technical cost is curtailed energy, network losses and reactive
+energy outside the PCC window, in MWh and MVArh and, at indicative prices
+(`--energy-price`, `--reactive-price`), in k€.
 
-The technical cost is curtailed energy, network losses and reactive energy
-exchanged outside the PCC window. It is given in MWh and MVArh and, at indicative
-prices (`--energy-price`, `--reactive-price`), in k€.
+A run reports itself alone. `--compare` also runs the same case at the static rating
+and sets the two side by side; the static case is slow, so it is reused if a matching
+run is already in the output folder.
 
 The matrix runner adds `matrix_summary.csv` and comparison figures.
 
@@ -94,8 +95,8 @@ git clone https://github.com/tubnguyen/HOSTING-CAPACITY-DLR
 cd HOSTING-CAPACITY-DLR
 pip install -e ".[dev]"
 
-corridor-sim --preset dlr2_der4_bess --days 3      # full-weather DLR vs static, all plants, battery
-corridor-sim --preset static_der4 --days 3         # static rating only
+corridor-sim --preset dlr2_der4_bess --days 3            # full-weather DLR, all plants, battery
+corridor-sim --preset dlr2_der4_bess --days 3 --compare  # the same, beside the static rating
 python scripts/run_matrix.py --days 30 --jobs 8    # all 21 presets in parallel
 ```
 

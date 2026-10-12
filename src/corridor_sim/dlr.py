@@ -214,9 +214,9 @@ def align_to_index(df: pd.DataFrame, index: pd.DatetimeIndex, name: str) -> pd.D
 def prepare_weather(cfg, weather: pd.DataFrame, index: pd.DatetimeIndex) -> pd.DataFrame:
     """Resample weather to the simulation index and derive the per-zone wind field.
 
-    Produces air temperature, irradiance, and for each rating zone the wind
-    speed at conductor height and its angle of attack against that zone's mean
-    bearing.
+    Produces air temperature, irradiance, and for each rating zone the
+    effective cooling wind at conductor height and its angle of attack against
+    that zone's mean bearing.
     """
     need = {"t_air_c", "u100_ms", "v100_ms", "ghi_wm2"}
     missing = need - set(weather.columns)
@@ -229,8 +229,10 @@ def prepare_weather(cfg, weather: pd.DataFrame, index: pd.DatetimeIndex) -> pd.D
     # Meteorological convention: the direction the wind blows from.
     bearing = (np.degrees(np.arctan2(-w["u100_ms"].to_numpy(),
                                      -w["v100_ms"].to_numpy())) + 360.0) % 360.0
+    # Open-terrain wind at conductor height, then only the share of it that
+    # cools the least-cooled span (C.DLR_WIND_FACTOR explains why).
     speed = log_law(speed_ref, C.DLR_REF_HEIGHT_M, cfg.conductor_height_m,
-                    cfg.roughness_m, cfg.displacement_m)
+                    cfg.roughness_m, cfg.displacement_m) * cfg.dlr_wind_factor
 
     out = pd.DataFrame(index=index)
     out["t_air_c"] = w["t_air_c"].to_numpy()

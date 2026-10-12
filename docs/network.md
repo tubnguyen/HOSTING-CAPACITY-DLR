@@ -29,7 +29,7 @@ graph LR
 
 * **Constrained corridor:** `SUB_A → PCC`, 41 km. Zone Z1 is `SUB_A → SUB_C` (30 km),
   zone Z2 is `SUB_C → PCC` (11 km).
-* **Bearings:** each zone picks 0°, 30°, 45°, 60° or 90° (defaults Z1 90°, Z2 60°).
+* **Bearings:** each zone picks 0°, 30°, 45°, 60° or 90° (default 45° for both).
   Only matters for full-weather rating.
 * **Topology is fixed:** a disconnected plant is set to zero output, not removed,
   so every scenario shares one network.
@@ -42,8 +42,8 @@ graph LR
 | AC resistance at 50 °C | 0.0973 Ω/km | 0.0486 Ω/km |
 | Reactance | 0.400 Ω/km | 0.290 Ω/km |
 | Static rating | 780 A (149 MVA) | 1560 A (297 MVA) |
-| Rating cap (1.5 ×) | 1170 A | 2340 A |
-| Series equipment | 1250 A | 2000 A |
+| Rating cap (2 ×) | 1560 A | 3120 A |
+| Series equipment | 1600 A | 3150 A |
 
 Design temperature 80 °C, diameter 25 mm.
 

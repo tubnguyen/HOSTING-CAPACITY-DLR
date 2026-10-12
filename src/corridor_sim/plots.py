@@ -1,8 +1,15 @@
 """Figures for a single run and for the scenario matrix.
 
-Every chart uses one measurement axis, a fixed categorical colour order, and
-carries a legend plus direct labels wherever a reader would otherwise have to
-match a colour by eye.
+The single-run figures follow the network: the currents in the corridor
+against every limit, how often each limit is exceeded, the power flow from
+the plants to the grid interface, the current along the corridor, the
+voltages, and what it all cost. Every chart uses one measurement axis per
+panel, a fixed colour per quantity, and a legend plus direct labels wherever
+a reader would otherwise have to match a colour by eye.
+
+Colours keep one meaning across figures: orange is what the plants push or
+offer, aqua what actually flows, blue the operative rating or the interface,
+grey the heat balance and every fixed reference.
 """
 from __future__ import annotations
 
@@ -13,13 +20,16 @@ import numpy as np
 import pandas as pd
 
 matplotlib.use("Agg")
+import matplotlib.dates as mdates  # noqa: E402
 import matplotlib.pyplot as plt  # noqa: E402
+from matplotlib.patches import Patch  # noqa: E402
 
 from . import constants as C  # noqa: E402
 from . import report  # noqa: E402
 from .report import corridor_series  # noqa: E402
+from .simulate import realised_generation  # noqa: E402
 
-SERIES = ["#2a78d6", "#eb6834", "#1baf7a", "#eda100"]
+SERIES = ["#2a78d6", "#eb6834", "#1baf7a", "#eda100", "#e87ba4", "#008300"]
 SURFACE = "#fcfcfb"
 INK = "#0b0b0b"
 INK_2 = "#52514e"
@@ -27,6 +37,7 @@ MUTED = "#8a8984"
 GRID = "#e5e4e0"
 SEQUENTIAL = "viridis"
 
+BLUE, ORANGE, AQUA = SERIES[0], SERIES[1], SERIES[2]
 RATING_LABELS = {0: "Static rating", 1: "Ambient-adjusted", 2: "Full-weather DLR"}
 
 
@@ -68,52 +79,428 @@ def _reference(ax, value, label, inside=False, x=0.01, below=False):
     for limits close enough together that their text would otherwise collide.
     """
     ax.axhline(value, color=MUTED, lw=1.2, ls=(0, (4, 3)), zorder=1)
-    if inside:
+    if inside and label:
         ax.annotate(label, xy=(x, value), xycoords=("axes fraction", "data"),
                     ha="left", va="top" if below else "bottom", fontsize=8.5, color=INK_2,
-                    xytext=(0, -4 if below else 4), textcoords="offset points")
+                    xytext=(0, -4 if below else 4), textcoords="offset points",
+                    bbox={"boxstyle": "round,pad=0.15", "fc": SURFACE, "ec": "none",
+                          "alpha": 0.85})
     else:
         ax.annotate(label, xy=(1.0, value), xycoords=("axes fraction", "data"),
                     ha="left", va="center", fontsize=8.5, color=INK_2,
                     xytext=(6, 0), textcoords="offset points", annotation_clip=False)
 
 
-def rating_timeseries(cfg, result: pd.DataFrame, path: Path):
-    """How the operative rating moves with weather, against the current carried."""
+def _dates(ax):
+    locator = mdates.AutoDateLocator()
+    ax.xaxis.set_major_locator(locator)
+    ax.xaxis.set_major_formatter(mdates.ConciseDateFormatter(locator))
+
+
+def _period_name(result: pd.DataFrame) -> str:
+    days = len(result) * C.DT_H / 24.0
+    return "year" if days >= 365 else f"{days:g} days"
+
+
+def _current_references(cfg, ax, label=True):
+    """The single-conductor static rating and the twin-bundle reinforcement."""
+    twin = f"{report.TWIN['label']} static {report.TWIN_STATIC_A:.0f} A"
+    if (cfg.dlr_mode > 0 and cfg.rating_cap_a is not None
+            and abs(cfg.rating_cap_a - report.TWIN_STATIC_A) < 1.0):
+        twin += " = DLR cap"
+    _reference(ax, report.SINGLE_STATIC_A,
+               f"{report.SINGLE['label']} static {report.SINGLE_STATIC_A:.0f} A" if label else "")
+    _reference(ax, report.TWIN_STATIC_A, twin if label else "")
+
+
+# ── Single run ───────────────────────────────────────────────────────────────
+def corridor_current(cfg, result: pd.DataFrame, path: Path):
+    """Every corridor current at 15-minute resolution, and its mean by period.
+
+    Top: the current all plants push before curtailment, what the corridor
+    carries after it, the operative rating and the heat-balance ampacity,
+    against the single-conductor static rating and the twin-bundle
+    reinforcement. Bottom: the same as monthly means, or one mean over a
+    window shorter than four weeks.
+    """
     _style()
     ok = result[result["converged"]]
-    fig, ax = plt.subplots(figsize=(10, 4.0))
-    rating = corridor_series(ok, "rating_{zone}_a", "min").rolling(8, min_periods=1).mean()
-    current = corridor_series(ok, "i_{zone}_a", "max").rolling(8, min_periods=1).mean()
+    t = ok.index
+    pushed = report.pushed_current(ok)
+    carried = corridor_series(ok, "i_{zone}_a", "max")
+    rating = corridor_series(ok, "rating_{zone}_a", "min")
+    weather = (corridor_series(ok, "rating_{zone}_weather_a", "min")
+               if cfg.dlr_mode > 0 else None)
 
-    # The heat balance alone, drawn behind the operative rating. The gap
-    # between the two is uplift the weather offered and the scheme may not
-    # use, which is a different quantity from the headroom above the current
-    # and reads as the same thing if only one line is plotted.
-    ncols, top = 2, max(float(rating.max()), float(current.max()), cfg.static_rating_a)
-    if cfg.dlr_mode > 0 and "rating_Z1_weather_a" in ok.columns:
-        weather = corridor_series(ok, "rating_{zone}_weather_a", "min").rolling(
-            8, min_periods=1).mean()
-        ax.plot(weather.index, weather, color=MUTED, lw=1.2, ls=(0, (5, 2)),
-                label="Heat-balance ampacity (weather)", zorder=1)
-        ax.fill_between(weather.index, rating, weather, where=weather >= rating,
-                        color=MUTED, alpha=0.10, lw=0, zorder=0)
-        ncols, top = 3, max(top, float(weather.max()))
+    fig, (ax, axm) = plt.subplots(2, 1, figsize=(10, 7.4),
+                                  gridspec_kw={"height_ratios": [1.7, 1.0], "hspace": 0.45})
+    # Drawn back to front: the heat balance only shows where it rises above the
+    # operative rating, and the carried current over the current pushed.
+    handles = []
+    if cfg.dlr_mode > 0:
+        weather_line = ax.plot(t, weather, color=MUTED, lw=0.9, ls=(0, (4, 2)),
+                               label="DLR ampacity, heat balance (weather)")[0]
+        rating_line = ax.plot(t, rating, color=BLUE, lw=1.3, label="Operative DLR rating")[0]
+    if pushed is not None:
+        handles.append(ax.plot(t, pushed, color=ORANGE, lw=1.0,
+                               label="Pushed by all plants (before curtailment)")[0])
+    handles.append(ax.plot(t, carried, color=AQUA, lw=1.0, label="Carried (after curtailment)")[0])
+    if cfg.dlr_mode > 0:
+        handles += [rating_line, weather_line]
+    if pushed is not None:
+        ax.fill_between(t, carried, pushed, where=pushed > carried + 0.5, interpolate=True,
+                        color=ORANGE, alpha=0.18, lw=0, zorder=0)
+        handles.append(Patch(color=ORANGE, alpha=0.18, lw=0, label="Curtailed"))
+    _current_references(cfg, ax)
+    tops = [s.max() for s in (pushed, carried, rating, weather) if s is not None]
+    top = max(max(tops), report.TWIN_STATIC_A)
+    ax.set_ylim(0, top * 1.1)
+    _dates(ax)
+    _clean(ax, "Amperes", f"Corridor current  ·  {RATING_LABELS[cfg.dlr_mode]} on "
+           f"{cfg.conductor_label}  ·  15-minute values")
 
-    ax.plot(rating.index, rating, color=SERIES[0], lw=1.6, label="Operative rating")
-    ax.plot(current.index, current, color=SERIES[1], lw=1.6, label="Corridor current")
-    ax.fill_between(rating.index, current, rating, where=rating >= current,
-                    color=SERIES[0], alpha=0.08, lw=0)
-    _reference(ax, cfg.static_rating_a, f"Static rating {cfg.static_rating_a:.0f} A")
-    _clean(ax, "Amperes", f"Corridor rating and loading  ·  {RATING_LABELS[cfg.dlr_mode]}")
-    ax.set_ylim(0, top * 1.12)
-    _legend_below(ax, ncols=ncols, pad=0.34)
-    fig.autofmt_xdate()
+    means = report.period_means(result)
+    groups = [("pushed_mean", ORANGE), ("carried_mean", AQUA)]
+    if cfg.dlr_mode > 0:
+        groups += [("rating_mean", BLUE), ("weather_mean", MUTED)]
+    groups = [(key, colour) for key, colour in groups if means[key].notna().any()]
+    n, k = len(means), len(groups)
+    span = max(n, 4)
+    pad = (span - n) / 2.0
+    width = min(0.8 / k, 0.025 * span)
+    x = np.arange(n)
+    for j, (key, colour) in enumerate(groups):
+        offset = (j - (k - 1) / 2.0) * width * 1.7
+        bars = axm.bar(x + offset, means[key], width, color=colour, linewidth=0)
+        if n <= 4:
+            for bar, value in zip(bars, means[key], strict=True):
+                if np.isfinite(value):
+                    axm.annotate(f"{value:.0f}", (bar.get_x() + bar.get_width() / 2, value),
+                                 ha="center", va="bottom", fontsize=8, color=INK_2,
+                                 xytext=(0, 2), textcoords="offset points")
+    _current_references(cfg, axm)
+    axm.set_xticks(x, list(means.index))
+    axm.set_xlim(-0.5 - pad, n - 0.5 + pad)
+    axm.set_ylim(0, max(float(np.nanmax(means[[g for g, _ in groups]].to_numpy())),
+                        report.TWIN_STATIC_A) * 1.15)
+    _clean(axm, "Amperes", "Mean over the period" if report.is_short_window(result)
+           else "Monthly mean")
+    _legend_below(axm, ncols=3, pad=0.20, handles=handles)
+    fig.savefig(path, bbox_inches="tight")
+    plt.close(fig)
+
+
+def current_duration(cfg, result: pd.DataFrame, path: Path):
+    """Each corridor current against the share of time it is reached or exceeded.
+
+    Marks how long the current the plants push stays above the single
+    conductor's static rating (the time a statically rated single conductor
+    would be overloaded), above the operative rating, and above the twin
+    bundle's static rating.
+    """
+    _style()
+    ok = result[result["converged"]]
+    pushed = report.pushed_current(ok)
+    carried = corridor_series(ok, "i_{zone}_a", "max")
+    rating = corridor_series(ok, "rating_{zone}_a", "min")
+
+    def curve(series):
+        values = np.sort(series.dropna().to_numpy())[::-1]
+        return np.linspace(0.0, 100.0, len(values)), values
+
+    fig, ax = plt.subplots(figsize=(10, 4.6))
+    if cfg.dlr_mode > 0:
+        ax.plot(*curve(corridor_series(ok, "rating_{zone}_weather_a", "min")), color=MUTED,
+                lw=1.2, ls=(0, (4, 2)), label="DLR ampacity, heat balance (weather)")
+        ax.plot(*curve(rating), color=BLUE, lw=1.6, label="Operative DLR rating")
+    if pushed is not None:
+        ax.plot(*curve(pushed), color=ORANGE, lw=1.8, label="Pushed by all plants")
+    ax.plot(*curve(carried), color=AQUA, lw=1.8, label="Carried after curtailment")
+    _current_references(cfg, ax)
+
+    if pushed is not None:
+        lines = []
+        for name, above in (
+                (f"above {report.SINGLE_STATIC_A:.0f} A ({report.SINGLE['label']} static)",
+                 pushed > report.SINGLE_STATIC_A),
+                ("above the operative rating", pushed > rating),
+                (f"above {report.TWIN_STATIC_A:.0f} A ({report.TWIN['label']} static)",
+                 pushed > report.TWIN_STATIC_A)):
+            share = 100.0 * float(above.mean())
+            lines.append(f"{name}: {share:.1f} % ({float(above.sum()) * C.DT_H:.0f} h)")
+        for limit in (report.SINGLE_STATIC_A, report.TWIN_STATIC_A):
+            share = 100.0 * float((pushed > limit).mean())
+            if share > 0.0:
+                ax.plot([share, share], [0.0, limit], color=INK_2, lw=0.9, ls=(0, (2, 2)),
+                        zorder=1)
+        ax.text(0.985, 0.96, "Current pushed by all plants\n" + "\n".join(lines),
+                transform=ax.transAxes, ha="right", va="top", fontsize=8.8, color=INK,
+                linespacing=1.5, bbox={"boxstyle": "round,pad=0.5", "fc": SURFACE, "ec": GRID})
+    ax.set_xlim(0, 100)
+    ax.set_ylim(0, max(ax.get_ylim()[1], report.TWIN_STATIC_A * 1.1) * 1.08)
+    _clean(ax, "Amperes", f"Corridor current duration  ·  {RATING_LABELS[cfg.dlr_mode]}",
+           f"Time exceeded (% of {_period_name(result)})")
+    _legend_below(ax, ncols=4, pad=0.18)
     fig.tight_layout()
     fig.savefig(path, bbox_inches="tight")
     plt.close(fig)
 
 
+def power_flow(cfg, result: pd.DataFrame, path: Path):
+    """Active power from the plants to the grid, and reactive power at the interface."""
+    _style()
+    ok = result[result["converged"]]
+    t = ok.index
+    available = ok["available_total_mw"]
+    delivered = realised_generation(ok)
+    export = ok["pcc_p_mw"]
+    q = ok["pcc_q_mvar"]
+    window = cfg.q_window_mvar
+
+    fig, (ax, axq) = plt.subplots(2, 1, figsize=(10, 6.6), sharex=True,
+                                  gridspec_kw={"height_ratios": [1.6, 1.0]})
+    ax.fill_between(t, delivered, available, where=available > delivered + 0.05,
+                    interpolate=True, color=ORANGE, alpha=0.18, lw=0, zorder=0)
+    handles = [ax.plot(t, available, color=ORANGE, lw=1.0, label="Available from all plants")[0],
+               ax.plot(t, delivered, color=AQUA, lw=1.0, label="Delivered by the plants")[0],
+               ax.plot(t, export, color=BLUE, lw=1.0, label="Net export at PCC")[0],
+               Patch(color=ORANGE, alpha=0.18, lw=0, label="Curtailed")]
+    ax.axhline(0.0, color=GRID, lw=1.0, zorder=0)
+    _reference(ax, cfg.export_cap_mw, f"Export cap {cfg.export_cap_mw:.0f} MW")
+    ax.set_ylim(min(0.0, float(export.min())) * 1.15,
+                max(cfg.export_cap_mw, float(available.max())) * 1.12)
+    _clean(ax, "MW", "Power flow  ·  from the plants to the grid interface")
+
+    axq.axhspan(-window, window, color=MUTED, alpha=0.10, lw=0)
+    handles.append(axq.plot(t, q, color=INK_2, lw=1.0,
+                            label="Reactive power at PCC (+ export)")[0])
+    handles.append(Patch(color=MUTED, alpha=0.10, lw=0, label=f"Window ±{window:g} MVAr"))
+    _reference(axq, window, f"+{window:g} MVAr")
+    _reference(axq, -window, f"−{window:g} MVAr")
+    axq.axhline(0.0, color=GRID, lw=1.0, zorder=0)
+    lim = max(window, float(q.abs().max())) * 1.15
+    axq.set_ylim(-lim, lim)
+    _clean(axq, "MVAr", "Reactive power at the grid interface")
+    _dates(axq)
+    _legend_below(axq, ncols=3, pad=0.22, handles=handles)
+    fig.tight_layout()
+    fig.savefig(path, bbox_inches="tight")
+    plt.close(fig)
+
+
+def corridor_segments(cfg, result: pd.DataFrame, path: Path):
+    """Mean and maximum current on each corridor segment, head to grid interface.
+
+    The power the plants inject joins the corridor at three taps, so the flow
+    builds up along it; the segment that carries everything is the bottleneck.
+    """
+    _style()
+    ok = result[result["converged"]]
+    lines = [line for line in report.SEGMENTS if f"i_{line}_a" in ok.columns]
+    mean_i = [float(ok[f"i_{line}_a"].mean()) for line in lines]
+    max_i = [float(ok[f"i_{line}_a"].max()) for line in lines]
+    labels = [f"{report.SEGMENTS[line][0].replace(' to ', ' → ')}\n"
+              f"{report.SEGMENTS[line][1]:g} km, mean {ok[f'p_{line}_mw'].mean():.0f} MW"
+              for line in lines]
+
+    fig, ax = plt.subplots(figsize=(10, 4.6))
+    x = np.arange(len(lines))
+    width = 0.22
+    for offset, values, colour, name in ((-0.13, mean_i, AQUA, "Mean current"),
+                                         (0.13, max_i, BLUE, "Maximum current")):
+        bars = ax.bar(x + offset, values, width, color=colour, linewidth=0, label=name)
+        for bar, value in zip(bars, values, strict=True):
+            ax.annotate(f"{value:.0f}", (bar.get_x() + bar.get_width() / 2, value),
+                        ha="center", va="bottom", fontsize=8, color=INK_2,
+                        xytext=(0, 2), textcoords="offset points")
+    _current_references(cfg, ax)
+    ax.set_xticks(x, labels)
+    ax.set_ylim(0, max(max(max_i), report.TWIN_STATIC_A) * 1.15)
+    _clean(ax, "Amperes", "Current along the corridor, after curtailment")
+    _legend_below(ax, ncols=2, pad=0.24)
+    fig.tight_layout()
+    fig.savefig(path, bbox_inches="tight")
+    plt.close(fig)
+
+
+def voltage_timeseries(result: pd.DataFrame, path: Path):
+    """Voltage at every corridor bus, head to grid interface, at 15-minute resolution."""
+    _style()
+    ok = result[result["converged"]]
+    buses = [b for b in report.CORRIDOR_BUSES if f"v_{b}_pu" in ok.columns]
+    fig, ax = plt.subplots(figsize=(10, 4.4))
+    for colour, bus in zip(SERIES, buses, strict=False):
+        ax.plot(ok.index, ok[f"v_{bus}_pu"], color=colour, lw=0.9, label=bus)
+    _reference(ax, C.V_MAX_PU, f"Upper band {C.V_MAX_PU:g} pu")
+    _reference(ax, C.V_MIN_PU, f"Lower band {C.V_MIN_PU:g} pu")
+    values = ok[[f"v_{b}_pu" for b in buses]].to_numpy()
+    ax.set_ylim(min(C.V_MIN_PU - 0.01, float(np.nanmin(values)) - 0.005),
+                max(C.V_MAX_PU + 0.01, float(np.nanmax(values)) + 0.005))
+    _dates(ax)
+    _clean(ax, "Voltage (pu)", "Voltage along the corridor  ·  15-minute values")
+    _legend_below(ax, ncols=6, pad=0.16)
+    fig.tight_layout()
+    fig.savefig(path, bbox_inches="tight")
+    plt.close(fig)
+
+
+def technical_cost(cfg, result: pd.DataFrame, path: Path, reference=None):
+    """Cost of curtailment, losses and reactive exchange outside the window.
+
+    One bar per item in k€, labelled with the energy behind it. With a static
+    reference each item gets a static and a DLR bar.
+    """
+    _style()
+    m = report.metrics(cfg, result)
+    r = report.metrics(reference.cfg, reference.result) if reference is not None else None
+    items = (("Curtailed energy", "cost_curtailed_keur", "curtailed_mwh", "MWh"),
+             ("Network losses", "cost_losses_keur", "losses_mwh", "MWh"),
+             (f"Reactive outside ±{cfg.q_window_mvar:g} MVAr", "cost_reactive_keur",
+              "reactive_outside_window_mvarh", "MVArh"))
+    fig, ax = plt.subplots(figsize=(9.4, 3.8 if r is None else 4.4))
+    y = np.arange(len(items))[::-1].astype(float)
+    top = max(m[key] for _, key, _, _ in items)
+
+    def label(bar, metrics_, key, qty, unit):
+        value = metrics_[key]
+        ax.annotate(f"{value:,.1f} k€  ·  {metrics_[qty]:,.0f} {unit}",
+                    (value, bar.get_y() + bar.get_height() / 2), ha="left", va="center",
+                    fontsize=8.8, color=INK, xytext=(5, 0), textcoords="offset points")
+
+    if r is None:
+        bars = ax.barh(y, [m[key] for _, key, _, _ in items], 0.36, color=BLUE, linewidth=0)
+        for bar, (_, key, qty, unit) in zip(bars, items, strict=True):
+            label(bar, m, key, qty, unit)
+        title = (f"Technical cost  ·  {m['technical_cost_keur']:,.0f} k€ over "
+                 f"{_period_name(result)}")
+    else:
+        top = max(top, max(r[key] for _, key, _, _ in items))
+        for offset, metrics_, colour, name in ((0.2, r, MUTED, "Static rating"),
+                                                (-0.2, m, BLUE, RATING_LABELS[cfg.dlr_mode])):
+            bars = ax.barh(y + offset, [metrics_[key] for _, key, _, _ in items], 0.34,
+                           color=colour, linewidth=0, label=name)
+            for bar, (_, key, qty, unit) in zip(bars, items, strict=True):
+                label(bar, metrics_, key, qty, unit)
+        total_s, total_d = r["technical_cost_keur"], m["technical_cost_keur"]
+        change = f" ({100.0 * (total_d - total_s) / total_s:+.0f} %)" if total_s > 0 else ""
+        title = (f"Technical cost  ·  static rating vs {RATING_LABELS[cfg.dlr_mode]}  ·  "
+                 f"{total_s:,.0f} → {total_d:,.0f} k€{change}")
+        _legend_below(ax, ncols=2, pad=0.24)
+    ax.set_yticks(y, [name for name, _, _, _ in items])
+    ax.set_xlim(0, max(top, 1e-9) * 1.55)
+    _clean(ax, "", title, "k€")
+    ax.set_title(title, loc="left", pad=24)
+    ax.grid(True, axis="x", alpha=0.7)
+    ax.grid(False, axis="y")
+    ax.annotate(f"At {cfg.energy_price_eur_mwh:g} €/MWh for curtailment and losses, "
+                f"{cfg.reactive_price_eur_mvarh:g} €/MVArh for reactive energy outside the "
+                f"window.", xy=(0.0, 1.0), xycoords="axes fraction", xytext=(0, 6),
+                textcoords="offset points", ha="left", va="bottom", fontsize=8.5, color=INK_2)
+    fig.tight_layout()
+    fig.savefig(path, bbox_inches="tight")
+    plt.close(fig)
+
+
+def rating_vs_weather(cfg, result: pd.DataFrame, path: Path):
+    """What drives the conductor rating, and where the scheme stops using it.
+
+    Plots the heat balance rather than the operative rating. Once a ceiling
+    binds, the operative rating is a horizontal line and a scatter of it against
+    wind speed says nothing at all - the physics is still there, it is just no
+    longer what sets the limit. Drawing the ceilings over the physics shows both
+    the relationship and how much of it is reachable.
+    """
+    _style()
+    column = ("rating_Z1_weather_a" if "rating_Z1_weather_a" in result.columns
+              else "rating_Z1_a")
+    ok = result[result["converged"]].dropna(subset=["wind_Z1_ms", column])
+    fig, ax = plt.subplots(figsize=(7.6, 4.4))
+    scatter = ax.scatter(ok["wind_Z1_ms"], ok[column], c=ok["t_air_c"],
+                         cmap=SEQUENTIAL, s=9, alpha=0.55, linewidths=0)
+    _reference(ax, cfg.static_rating_a, f"Static {cfg.static_rating_a:.0f} A", inside=True)
+    cap, equipment = cfg.rating_cap_a, cfg.equipment_rating_a
+    if cap is not None and equipment is not None and abs(equipment - cap) < 0.1 * cap:
+        # Close enough that two labels would collide: one label for both lines.
+        _reference(ax, cap, "")
+        _reference(ax, equipment, f"Cap {cap:.0f} A, series equipment {equipment:.0f} A",
+                   inside=True)
+    else:
+        if cap is not None:
+            _reference(ax, cap, f"Cap {cap:.0f} A", inside=True, below=True)
+        if equipment is not None:
+            _reference(ax, equipment, f"Series equipment {equipment:.0f} A", inside=True,
+                       x=0.30)
+    bar = fig.colorbar(scatter, ax=ax, pad=0.02)
+    bar.set_label("Air temperature (°C)", color=INK_2)
+    bar.outline.set_visible(False)
+    _clean(ax, "Heat-balance ampacity (A)",
+           "What the weather allows, against what the scheme may use",
+           f"Cooling wind at the conductor (m/s, {100 * cfg.dlr_wind_factor:.0f} % "
+           f"of the open-terrain wind)")
+    ax.set_ylim(0, None)
+    fig.tight_layout()
+    fig.savefig(path, bbox_inches="tight")
+    plt.close(fig)
+
+
+def storage_operation(cfg, result: pd.DataFrame, path: Path):
+    """Export at the interface and the state of charge behind it."""
+    _style()
+    ok = result[result["converged"]]
+    fig, axes = plt.subplots(2, 1, figsize=(10, 5.4), sharex=True,
+                             gridspec_kw={"height_ratios": [1.25, 1]})
+
+    axes[0].plot(ok.index, ok["pcc_p_mw"], color=BLUE, lw=1.3, label="Export at interface")
+    axes[0].plot(ok.index, ok["storage_p_grid_mw"], color=ORANGE, lw=1.3,
+                 label="Storage power (+ discharge)")
+    _reference(axes[0], cfg.export_cap_mw, f"Export cap {cfg.export_cap_mw:.0f} MW")
+    _clean(axes[0], "MW", "Interface export and storage dispatch")
+    axes[0].set_ylim(top=cfg.export_cap_mw * 1.42)
+    axes[0].legend(loc="upper left", ncols=2, framealpha=0.0)
+
+    axes[1].plot(ok.index, ok["storage_soc_pct"], color=AQUA, lw=1.6,
+                 label="State of charge")
+    _reference(axes[1], 100 * C.BESS_SOC_RESERVE_FLOOR, "Reserve floor")
+    _clean(axes[1], "State of charge (%)", "")
+    axes[1].set_ylim(0, 118)
+    _dates(axes[1])
+    _legend_below(axes[1], ncols=2, pad=0.30)
+    fig.tight_layout()
+    fig.savefig(path, bbox_inches="tight")
+    plt.close(fig)
+
+
+# Figures earlier versions drew and this one does not: removed when a run of
+# the same name is drawn again, so a folder never mixes two versions.
+_RETIRED = ("rating", "ampacity")
+
+
+def run_figures(cfg, result: pd.DataFrame, out_dir: Path, reference=None) -> list:
+    """Figures that describe one run; the cost figure compares only with a reference."""
+    out_dir = Path(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    made = []
+
+    def target(name: str) -> Path:
+        made.append(out_dir / f"{cfg.stem}_{name}.png")
+        return made[-1]
+
+    corridor_current(cfg, result, target("current"))
+    current_duration(cfg, result, target("duration"))
+    power_flow(cfg, result, target("power"))
+    corridor_segments(cfg, result, target("segments"))
+    voltage_timeseries(result, target("voltage"))
+    technical_cost(cfg, result, target("cost"), reference)
+    if cfg.dlr_mode == 2:
+        rating_vs_weather(cfg, result, target("rating_drivers"))
+    if cfg.storage_enabled:
+        storage_operation(cfg, result, target("storage"))
+    for name in _RETIRED:
+        (out_dir / f"{cfg.stem}_{name}.png").unlink(missing_ok=True)
+    return made
+
+
+# ── Scenario matrix ──────────────────────────────────────────────────────────
 def loading_duration(runs: dict, path: Path):
     """Duration curve of corridor loading under each rating method."""
     _style()
@@ -172,273 +559,3 @@ def curtailment_matrix(table: pd.DataFrame, path: Path):
     fig.tight_layout()
     fig.savefig(path, bbox_inches="tight")
     plt.close(fig)
-
-
-def rating_vs_weather(cfg, result: pd.DataFrame, path: Path):
-    """What drives the conductor rating, and where the scheme stops using it.
-
-    Plots the heat balance rather than the operative rating. Once a ceiling
-    binds, the operative rating is a horizontal line and a scatter of it against
-    wind speed says nothing at all - the physics is still there, it is just no
-    longer what sets the limit. Drawing the ceilings over the physics shows both
-    the relationship and how much of it is reachable.
-    """
-    _style()
-    column = ("rating_Z1_weather_a" if "rating_Z1_weather_a" in result.columns
-              else "rating_Z1_a")
-    ok = result[result["converged"]].dropna(subset=["wind_Z1_ms", column])
-    fig, ax = plt.subplots(figsize=(7.6, 4.4))
-    scatter = ax.scatter(ok["wind_Z1_ms"], ok[column], c=ok["t_air_c"],
-                         cmap=SEQUENTIAL, s=9, alpha=0.55, linewidths=0)
-    # Staggered: the cap and the equipment rating sit close together by design,
-    # and stacked labels at the same x would overlap.
-    _reference(ax, cfg.static_rating_a, f"Static {cfg.static_rating_a:.0f} A", inside=True)
-    if cfg.rating_cap_a is not None:
-        _reference(ax, cfg.rating_cap_a, f"Cap {cfg.rating_cap_a:.0f} A", inside=True,
-                   below=True)
-    if cfg.equipment_rating_a is not None:
-        _reference(ax, cfg.equipment_rating_a,
-                   f"Series equipment {cfg.equipment_rating_a:.0f} A",
-                   inside=True, x=0.30)
-    bar = fig.colorbar(scatter, ax=ax, pad=0.02)
-    bar.set_label("Air temperature (°C)", color=INK_2)
-    bar.outline.set_visible(False)
-    _clean(ax, "Heat-balance ampacity (A)",
-           "What the weather allows, against what the scheme may use",
-           "Wind speed at conductor height (m/s)")
-    ax.set_ylim(0, None)
-    fig.tight_layout()
-    fig.savefig(path, bbox_inches="tight")
-    plt.close(fig)
-
-
-def storage_operation(cfg, result: pd.DataFrame, path: Path):
-    """Export at the interface and the state of charge behind it."""
-    _style()
-    ok = result[result["converged"]]
-    fig, axes = plt.subplots(2, 1, figsize=(10, 5.4), sharex=True,
-                             gridspec_kw={"height_ratios": [1.25, 1]})
-
-    axes[0].plot(ok.index, ok["pcc_p_mw"], color=SERIES[0], lw=1.3, label="Export at interface")
-    axes[0].plot(ok.index, ok["storage_p_grid_mw"], color=SERIES[1], lw=1.3,
-                 label="Storage power (+ discharge)")
-    _reference(axes[0], cfg.export_cap_mw, f"Export cap {cfg.export_cap_mw:.0f} MW")
-    _clean(axes[0], "MW", "Interface export and storage dispatch")
-    axes[0].set_ylim(top=cfg.export_cap_mw * 1.42)
-    axes[0].legend(loc="upper left", ncols=2, framealpha=0.0)
-
-    axes[1].plot(ok.index, ok["storage_soc_pct"], color=SERIES[2], lw=1.6,
-                 label="State of charge")
-    _reference(axes[1], 100 * C.BESS_SOC_RESERVE_FLOOR, "Reserve floor")
-    _clean(axes[1], "State of charge (%)", "")
-    axes[1].set_ylim(0, 118)
-    _legend_below(axes[1], ncols=2, pad=0.30)
-    fig.autofmt_xdate()
-    fig.tight_layout()
-    fig.savefig(path, bbox_inches="tight")
-    plt.close(fig)
-
-
-def voltage_profile(result: pd.DataFrame, path: Path):
-    """Voltage along the corridor, from the head to the grid interface."""
-    _style()
-    order = ["SUB_A", "TAP_PV", "TAP_W", "SUB_C", "TAP_B", "PCC"]
-    ok = result[result["converged"]]
-    cols = [f"v_{b}_pu" for b in order]
-    fig, ax = plt.subplots(figsize=(8, 4.0))
-    x = np.arange(len(order))
-    low = [ok[c].quantile(0.01) for c in cols]
-    high = [ok[c].quantile(0.99) for c in cols]
-    median = [ok[c].median() for c in cols]
-
-    ax.fill_between(x, low, high, color=SERIES[0], alpha=0.16, lw=0,
-                    label="1st to 99th percentile")
-    ax.plot(x, median, color=SERIES[0], lw=2.0, marker="o", ms=5, label="Median")
-    _reference(ax, C.V_MAX_PU, "Upper band")
-    _reference(ax, C.V_MIN_PU, "Lower band")
-    ax.set_xticks(x, order)
-    _clean(ax, "Voltage (pu)", "Voltage along the corridor")
-    _legend_below(ax, ncols=2)
-    fig.tight_layout()
-    fig.savefig(path, bbox_inches="tight")
-    plt.close(fig)
-
-
-def _period_name(result: pd.DataFrame) -> str:
-    days = len(result) * C.DT_H / 24.0
-    return "year" if days >= 365 else f"{days:g} days"
-
-
-def ampacity_by_month(cfg, result: pd.DataFrame, path: Path):
-    """Operative ampacity by month, against the single and twin static ratings.
-
-    The heat balance is drawn too whenever a ceiling held the rating below it:
-    a capped rating is a flat line, and without the weather beside it the
-    figure cannot say whether the weather or the scheme set that line.
-    """
-    _style()
-    ok = result[result["converged"]]
-    stats = report.monthly_ampacity(result)
-    n = len(stats)
-    x = np.arange(n)
-    # Thin range bars: about 22 px whatever the number of months.
-    span = max(n, 6)
-    pad = (span - n) / 2.0
-    width = 0.024 * span
-
-    fig, ax = plt.subplots(figsize=(8.6, 4.2))
-    span_bars = ax.bar(x, stats["rating_max"] - stats["rating_min"],
-                       bottom=stats["rating_min"], width=width, color=SERIES[0], alpha=0.25,
-                       linewidth=0, label="DLR operative, monthly min to max")
-    (mean_line,) = ax.plot(x, stats["rating_mean"], color=SERIES[0], lw=1.8, marker="o", ms=7,
-                           mec=SURFACE, mew=1.5, label="DLR operative, monthly mean", zorder=3)
-    handles = [mean_line, span_bars]
-    top = max(float(stats["rating_max"].max()), report.TWIN_STATIC_A)
-
-    binding = report.governing_binding(ok)
-    if np.isin(binding, ["cap", "equipment"]).any():
-        (weather_line,) = ax.plot(x, stats["weather_mean"], color=MUTED, lw=1.4,
-                                  ls=(0, (5, 2)), marker="o", ms=6, mfc=SURFACE, mec=MUTED,
-                                  mew=1.4, label="Heat-balance ampacity, monthly mean",
-                                  zorder=2)
-        handles.append(weather_line)
-        top = max(top, float(stats["weather_mean"].max()))
-
-    _reference(ax, report.SINGLE_STATIC_A,
-               f"{report.SINGLE['label']} static {report.SINGLE_STATIC_A:.0f} A")
-    _reference(ax, report.TWIN_STATIC_A,
-               f"{report.TWIN['label']} static {report.TWIN_STATIC_A:.0f} A")
-    one_year = len({p.year for p in stats.index}) == 1
-    ax.set_xticks(x, [p.strftime("%b" if one_year else "%b\n%Y") for p in stats.index])
-    ax.set_xlim(-0.5 - pad, n - 0.5 + pad)
-    ax.set_ylim(0, top * 1.12)
-    _clean(ax, "Ampacity (A)", f"Operative ampacity by month  ·  "
-           f"{RATING_LABELS[cfg.dlr_mode]} on {cfg.conductor_label}")
-    _legend_below(ax, ncols=3, pad=0.12, handles=handles)
-    fig.tight_layout()
-    fig.savefig(path, bbox_inches="tight")
-    plt.close(fig)
-
-
-def current_duration(cfg, result: pd.DataFrame, path: Path):
-    """Corridor current and operative rating against the share of time exceeded.
-
-    Marks how long the current stayed above a single conductor's static
-    rating: the time a statically rated single conductor would have been
-    overloaded by the same flow.
-    """
-    _style()
-    ok = result[result["converged"]]
-    current = np.sort(corridor_series(ok, "i_{zone}_a", "max").to_numpy())[::-1]
-    rating = np.sort(corridor_series(ok, "rating_{zone}_a", "min").to_numpy())[::-1]
-    pct = np.linspace(0.0, 100.0, len(current))
-    static = report.SINGLE_STATIC_A
-    name = report.SINGLE["label"]
-
-    fig, ax = plt.subplots(figsize=(8.6, 4.2))
-    ax.fill_between(pct, static, current, where=current > static, interpolate=True,
-                    color=SERIES[1], alpha=0.12, lw=0, label=f"Above {name} static rating")
-    ax.plot(pct, rating, color=SERIES[0], lw=1.8, label="Operative rating")
-    ax.plot(pct, current, color=SERIES[1], lw=1.8, label="Corridor current")
-    _reference(ax, static, f"{name} static {static:.0f} A")
-    if cfg.conductor != "single":
-        _reference(ax, cfg.static_rating_a,
-                   f"{cfg.conductor_label} static {cfg.static_rating_a:.0f} A")
-
-    share = 100.0 * float(np.mean(current > static))
-    hours = float(np.sum(current > static)) * C.DT_H
-    if share > 0.0:
-        ax.plot([share, share], [0.0, static], color=INK_2, lw=1.0, ls=(0, (2, 2)), zorder=1)
-        ax.annotate(f"{share:.1f} % of the time above {static:.0f} A\n({hours:.0f} h)",
-                    xy=(share, static), xytext=(8, 10), textcoords="offset points",
-                    ha="left", va="bottom", fontsize=9, color=INK)
-    else:
-        ax.annotate(f"Never above {static:.0f} A", xy=(0.5, static),
-                    xycoords=("axes fraction", "data"), xytext=(0, 6),
-                    textcoords="offset points", ha="center", va="bottom",
-                    fontsize=9, color=INK)
-    top = max(float(rating.max()), float(current.max()), cfg.static_rating_a, static)
-    ax.set_xlim(0, 100)
-    ax.set_ylim(0, top * 1.12)
-    _clean(ax, "Amperes", f"Corridor current duration  ·  {RATING_LABELS[cfg.dlr_mode]}",
-           f"Time exceeded (% of {_period_name(result)})")
-    _legend_below(ax, ncols=3, pad=0.20)
-    fig.tight_layout()
-    fig.savefig(path, bbox_inches="tight")
-    plt.close(fig)
-
-
-def _quantity(value: float) -> str:
-    return f"{value:,.0f}" if abs(value) >= 100 else f"{value:,.1f}"
-
-
-def technical_cost(cfg, result: pd.DataFrame, reference, path: Path):
-    """Curtailed energy, losses and reactive exchange: static rating against DLR.
-
-    One panel per quantity, because they carry different units and one shared
-    axis would hide the smaller ones.
-    """
-    _style()
-    m = report.metrics(cfg, result)
-    r = report.metrics(reference.cfg, reference.result)
-    panels = (("Curtailed energy", "MWh", "curtailed_mwh"),
-              ("Network losses", "MWh", "losses_mwh"),
-              (f"Reactive outside ±{cfg.q_window_mvar:g} MVAr window", "MVArh",
-               "reactive_outside_window_mvarh"))
-    fig, axes = plt.subplots(1, len(panels), figsize=(10, 3.9))
-    for ax, (title, unit, key) in zip(axes, panels, strict=True):
-        values = [float(r[key]), float(m[key])]
-        bars = ax.bar([0, 1], values, width=0.22, color=[MUTED, SERIES[0]], linewidth=0)
-        for bar, value in zip(bars, values, strict=True):
-            ax.annotate(_quantity(value), (bar.get_x() + bar.get_width() / 2, value),
-                        ha="center", va="bottom", fontsize=9, color=INK,
-                        xytext=(0, 3), textcoords="offset points")
-        if values[0] > 0:
-            change = 100.0 * (values[1] - values[0]) / values[0]
-            ax.annotate(f"{change:+.0f} %", xy=(0.5, 0.98), xycoords="axes fraction",
-                        ha="center", va="top", fontsize=9.5, color=INK_2)
-        ax.set_xticks([0, 1], ["Static", "DLR"])
-        ax.set_xlim(-0.7, 1.7)
-        ax.set_ylim(0, max(max(values), 1e-9) * 1.28)
-        _clean(ax, unit, title)
-        ax.title.set_fontsize(10)
-    total_s, total_d = r["technical_cost_keur"], m["technical_cost_keur"]
-    total = f"total {total_s:,.0f} → {total_d:,.0f} k€"
-    if total_s > 0:
-        total += f" ({100.0 * (total_d - total_s) / total_s:+.0f} %)"
-    fig.suptitle(f"Technical cost  ·  static rating vs {RATING_LABELS[cfg.dlr_mode]}  ·  "
-                 f"{total}", x=0.01, ha="left", fontsize=11, fontweight="bold", color=INK)
-    fig.text(0.01, -0.02, f"Costs at {cfg.energy_price_eur_mwh:g} €/MWh for curtailment and "
-             f"losses, {cfg.reactive_price_eur_mvarh:g} €/MVArh for reactive energy outside "
-             f"the window.", ha="left", va="top", fontsize=8.5, color=INK_2)
-    fig.tight_layout()
-    fig.savefig(path, bbox_inches="tight")
-    plt.close(fig)
-
-
-def run_figures(cfg, result: pd.DataFrame, out_dir: Path, reference=None) -> list:
-    """Figures that describe one run; the cost figure needs its static reference."""
-    out_dir = Path(out_dir)
-    out_dir.mkdir(parents=True, exist_ok=True)
-    made = []
-
-    def target(name: str) -> Path:
-        made.append(out_dir / f"{cfg.stem}_{name}.png")
-        return made[-1]
-
-    rating_timeseries(cfg, result, target("rating"))
-    if cfg.dlr_mode > 0:
-        ampacity_by_month(cfg, result, target("ampacity"))
-    current_duration(cfg, result, target("duration"))
-    if reference is not None:
-        technical_cost(cfg, result, reference, target("cost"))
-    else:
-        # A cost figure left from an earlier run would show a comparison this
-        # run did not make.
-        (out_dir / f"{cfg.stem}_cost.png").unlink(missing_ok=True)
-    voltage_profile(result, target("voltage"))
-    if cfg.dlr_mode == 2:
-        rating_vs_weather(cfg, result, target("rating_drivers"))
-    if cfg.storage_enabled:
-        storage_operation(cfg, result, target("storage"))
-    return made

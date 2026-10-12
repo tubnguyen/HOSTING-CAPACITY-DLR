@@ -239,6 +239,10 @@ def run(cfg, net, buses, inputs, progress=True, label="") -> pd.DataFrame:
             phase2 = {"mode": phase1["mode"], "p_plant_mw": 0.0, "headroom_clamped": 0,
                       "shortfall_mw": 0.0, "charge_surplus_mw": 0.0, "charge_grid_mw": 0.0}
 
+        # The current every plant at full available output pushes into the
+        # corridor, read before curtailment acts on it.
+        pushed = {zone: (_zone_current(net, idx, zone) if ok else float("nan"))
+                  for zone in CORRIDOR_ZONES}
         if ok and cfg.curtailment:
             curtail_record = curtailment.curtail(net, cfg, idx, limits)
             ok = ok and curtail_record["ok"]
@@ -294,6 +298,7 @@ def run(cfg, net, buses, inputs, progress=True, label="") -> pd.DataFrame:
         if cfg.storage_enabled and ok:
             phase2["q_mvar"] = float(net.storage.at[idx.storage, "q_mvar"])
         row.update(_rating_columns(cfg, limits, diag, source, net, idx, ok))
+        row.update({f"i_{zone}_uncurtailed_a": pushed[zone] for zone in CORRIDOR_ZONES})
         row.update(_storage_columns(cfg, phase2, soc_mwh, p_realised, soc_clamped,
                                     reserve, short, float(activation[i]), ok, flag))
         row.update({k: v for k, v in curtail_record.items() if k != "ok"})
@@ -311,7 +316,7 @@ def run(cfg, net, buses, inputs, progress=True, label="") -> pd.DataFrame:
         counters["headroom_clamped"] += int(phase2["headroom_clamped"])
         counters["reserve_short"] += int(short)
         counters["over_temperature"] += int(any(
-            row.get(f"t_cond_{z}_c", float("nan")) > cfg.t_cond_max_c
+            row.get(f"t_cond_{z}_c", float("nan")) > cfg.t_cond_max_c + C.T_COND_TOLERANCE_C
             for z in CORRIDOR_ZONES))
         counters["rating_headroom_limited"] += int(row.get("rating_headroom_limited", 0))
         counters["t_cond_saturated"] += int(any(
