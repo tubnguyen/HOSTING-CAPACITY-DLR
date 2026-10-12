@@ -36,7 +36,8 @@ TABLE_COLUMNS = [
     "scenario", "conductor", "dlr_mode", "n_der", "fleet_mw", "storage",
     "available_mwh", "delivered_mwh", "curtailed_mwh", "curtailed_pct", "net_export_mwh",
     "rating_mean_a", "rating_uplift_pct", "rating_weather_mean_a",
-    "rating_uplift_uncapped_pct", "headroom_limited_pct", "above_single_static_pct",
+    "rating_uplift_uncapped_pct", "headroom_limited_pct", "pushed_current_max_a",
+    "pushed_above_single_static_pct", "pushed_above_rating_pct", "pushed_above_twin_static_pct",
     "corridor_loading_p95_pct", "hours_corridor_over_limit", "pcc_peak_mw",
     "hours_over_export_cap", "hours_voltage_high", "hours_voltage_low", "losses_mwh",
     "reactive_outside_window_mvarh", "technical_cost_keur",
@@ -50,8 +51,8 @@ def _run_one(args) -> dict:
                        data_dir=Path(data_dir), label=preset)
     t0 = time.time()
     try:
-        # No comparison here: the static runs are part of the matrix, and each
-        # DLR run is paired with its own once every run has finished.
+        # No comparison here: the static runs are part of the matrix, and with
+        # --compare each DLR run is paired with its own once every run is done.
         metrics, _ = run_scenario(cfg, make_plots=make_plots, progress=False, compare=False)
         metrics["status"] = "ok"
     except Exception as exc:                          # keep the matrix going
@@ -145,12 +146,12 @@ def config_for(row) -> Config:
 
 
 def build_outputs(out_dir: Path, figures_dir: Path, redraw: bool = True,
-                  make_plots: bool = True) -> pd.DataFrame:
+                  make_plots: bool = True, compare: bool = False) -> pd.DataFrame:
     """Write the comparison table and every figure, from the saved time series.
 
-    Each DLR run with a static partner in the matrix gets its summary rewritten
-    against that partner, and its cost figure drawn when figures are on.
-    `redraw` redraws every run's figures as well.
+    With `compare`, each DLR run with a static partner in the matrix gets its
+    summary rewritten against that partner, and its cost figure redrawn when
+    figures are on. `redraw` redraws every run's figures as well.
     """
     table = collect(out_dir)
     figures_dir.mkdir(parents=True, exist_ok=True)
@@ -168,7 +169,7 @@ def build_outputs(out_dir: Path, figures_dir: Path, redraw: bool = True,
     if len(runs) >= 2:
         plots.loading_duration(runs, figures_dir / "loading_duration.png")
 
-    partners = static_partners(table)
+    partners = static_partners(table) if compare else {}
     for _, row in table.iterrows():
         scenario = row["scenario"]
         partner = partners.get(scenario)
@@ -191,7 +192,7 @@ def build_outputs(out_dir: Path, figures_dir: Path, redraw: bool = True,
             plots.run_figures(cfg, result, figures, ref)
         elif ref is not None and make_plots:
             figures.mkdir(parents=True, exist_ok=True)
-            plots.technical_cost(cfg, result, ref, figures / f"{cfg.stem}_cost.png")
+            plots.technical_cost(cfg, result, figures / f"{cfg.stem}_cost.png", ref)
 
     # Collected again: the pairing above records each run's static partner.
     table = collect(out_dir)
@@ -237,13 +238,15 @@ def main(argv=None) -> int:
                         help="comparison figures folder (default <out>/figures)")
     parser.add_argument("--no-plots", dest="plots", action="store_false")
     parser.add_argument("--collect-only", action="store_true")
+    parser.add_argument("--compare", action="store_true",
+                        help="rewrite each DLR run's summary against its static preset")
     args = parser.parse_args(argv)
     # Follows --out, so a matrix run elsewhere does not write into runs/.
     if args.figures is None:
         args.figures = args.out / "figures"
 
     if args.collect_only:
-        table = build_outputs(args.out, args.figures, redraw=args.plots)
+        table = build_outputs(args.out, args.figures, redraw=args.plots, compare=args.compare)
         print(table.to_string(index=False))
         return 0
 
@@ -278,7 +281,8 @@ def main(argv=None) -> int:
 
     # Each worker has already drawn its own figures, or skipped them under
     # --no-plots, so only the comparison figures are left to build here.
-    table = build_outputs(args.out, args.figures, redraw=False, make_plots=args.plots)
+    table = build_outputs(args.out, args.figures, redraw=False, make_plots=args.plots,
+                          compare=args.compare)
     print(_headline(table))
     print(f"\n  table   -> {args.out / 'matrix_summary.csv'}")
     print(f"  figures -> {args.figures}")

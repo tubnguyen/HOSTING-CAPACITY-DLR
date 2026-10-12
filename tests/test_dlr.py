@@ -122,9 +122,10 @@ def test_weather_alone_would_exceed_what_the_scheme_may_use():
 
 
 @pytest.mark.parametrize("kwargs,expected", [
-    ({}, "cap"),                                   # 1.5x static binds first
+    ({}, "cap"),                                   # 2x static binds first
     ({"dlr_cap_ratio": None}, "equipment"),        # then the substation plant
-    ({"conductor": "twin"}, "equipment"),          # twin outruns its switchgear
+    ({"conductor": "twin"}, "cap"),                # twin's switchgear sits above its cap
+    ({"conductor": "twin", "dlr_cap_ratio": None}, "equipment"),
     ({"dlr_cap_ratio": None, "equipment_limit": False}, "weather"),
 ])
 def test_the_binding_ceiling_is_recorded(kwargs, expected):
@@ -218,3 +219,17 @@ def test_zone_attack_angle_follows_the_configured_azimuth():
     w45 = dlr.prepare_weather(cfg45, weather, index)
     assert list(w45["phi_Z1_deg"]) == pytest.approx([45.0, 45.0])
     assert list(w45["phi_Z2_deg"]) == pytest.approx([30.0, 30.0])
+
+
+def test_only_the_configured_share_of_the_wind_cools_the_conductor():
+    """The rating wind scales with the wind factor, and so does what it allows."""
+    index = pd.date_range("2024-01-01", periods=4, freq="15min", tz="UTC")
+    weather = pd.DataFrame({"t_air_c": -5.0, "ghi_wm2": 0.0, "u100_ms": -8.0,
+                            "v100_ms": -2.0}, index=index)
+    full = dlr.prepare_weather(build_config(dlr_wind_factor=1.0), weather, index)
+    part = dlr.prepare_weather(build_config(dlr_wind_factor=0.4), weather, index)
+    assert part["wind_ms"].to_numpy() == pytest.approx(0.4 * full["wind_ms"].to_numpy())
+    cfg = build_config(dlr_mode=2)
+    sheltered, _ = dlr.bundle_ampacity(cfg, -5.0, part["wind_ms"].iloc[0], 90.0, 0.0)
+    open_, _ = dlr.bundle_ampacity(cfg, -5.0, full["wind_ms"].iloc[0], 90.0, 0.0)
+    assert cfg.static_rating_a < sheltered < open_

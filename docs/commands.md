@@ -19,15 +19,15 @@ corridor-sim [options]        # same as: python -m corridor_sim.cli [options]
 
 Default run is 30 days from 2024-01-01: single
 conductor, ambient-adjusted rating (mode 1), all four plants, droop control, no
-battery. A `--preset` sets a named scenario, and any flag given with it overrides
-the preset.
+battery, both zones at a 45° bearing. A `--preset` sets a named scenario, and any
+flag given with it overrides the preset.
 
-A DLR run (mode 1 or 2) is reported against the static rating: the same study at
-mode 0 is reused from the output folder if a matching run is there, and otherwise
-simulated in a second process at the same time and saved as its own run. Matching
-means the same window, plants, storage, network settings, input data and model
-code. The static case is the slower of the two, so the first DLR run of a setup
-takes about as long as that static run; later ones reuse it.
+A run reports itself alone. With `--compare`, a DLR run (mode 1 or 2) is also set
+beside the same study at the static rating: a matching static run in the output
+folder is reused, and otherwise one is simulated in a second process at the same
+time and saved as its own run. Matching means the same window, plants, storage,
+network settings, input data and model code. The static case is the slower of the
+two, so the first compared run of a setup takes about as long as that static run.
 
 ### Scenario
 
@@ -46,14 +46,18 @@ takes about as long as that static run; later ones reuse it.
 | Option | Values | Default | What it does |
 |---|---|---|---|
 | `--dlr` | `0`, `1`, `2` | `1` | 0 static, 1 ambient-adjusted, 2 full weather |
-| `--dlr-cap-ratio X` | number ≥ 1.0 | `1.5` | administrative cap on the dynamic rating, as a multiple of static |
+| `--dlr-cap-ratio X` | number ≥ 1.0 | `2.0` | administrative cap on the dynamic rating, as a multiple of static |
 | `--no-rating-cap` | flag | off | remove the administrative cap (cannot be combined with `--dlr-cap-ratio`) |
 | `--no-equipment-limit` | flag | off | ignore the series substation equipment rating |
 | `--azimuth DEG` | `0`, `30`, `45`, `60`, `90` | — | bearing of both zones (0 north–south, 90 east–west) |
-| `--azimuth-z1 DEG` | same set | `90` | bearing of zone Z1 only; wins over `--azimuth` |
-| `--azimuth-z2 DEG` | same set | `60` | bearing of zone Z2 only; wins over `--azimuth` |
+| `--azimuth-z1 DEG` | same set | `45` | bearing of zone Z1 only; wins over `--azimuth` |
+| `--azimuth-z2 DEG` | same set | `45` | bearing of zone Z2 only; wins over `--azimuth` |
+| `--wind-factor X` | 0 < X ≤ 1 | `0.4` | share of the conductor-height wind counted as cooling |
 
-The bearing only changes the result in mode 2.
+The bearing and the wind factor only change the result in mode 2. The wind factor
+stands for the least-cooled span: sheltered by trees and terrain, with the wind
+along rather than across it. At 1.0 the shipped site would average about twice the
+static rating and pass three times it in winter storms.
 
 ### Time window and files
 
@@ -66,7 +70,7 @@ The bearing only changes the result in mode 2.
 | `--out PATH` | folder | `runs/` | results go to `<out>/<label>/` |
 | `--label NAME` | text | auto | output name; auto is `<conductor>_der<n>_<control>_dlr<mode>_bess<0/1>` |
 | `--no-plots` | flag | plots on | skip the figures |
-| `--no-compare` | flag | compare on | skip the static run a DLR run is compared against |
+| `--compare` | flag | off | also run the static case and compare (slow the first time) |
 
 ### Technical cost prices
 
@@ -91,8 +95,7 @@ one-line message.
 | `der<n>` | `der1` … `der4` | `WF_2`, then `+WF_1`, then `+WF_3`, then `+PV_1` |
 | `_bess` | only with `der4` | battery connected |
 
-Plus `baseline`: static rating, no generation, cos φ control. Every preset uses droop
-control except `baseline`.
+Plus `baseline`: static rating, no generation. Every preset uses droop control.
 
 ### Examples
 
@@ -119,8 +122,11 @@ corridor-sim --dlr 0 --conductor twin --der WF_1,WF_2,WF_3 --days 365
 # your own data, a named output (its static reference is my_case_static)
 corridor-sim --data-dir /path/to/my_data --dlr 2 --start 2024-01-01 --days 365 --label my_case
 
-# a quick look without the static comparison, at your own prices
-corridor-sim --preset dlr2_der4 --days 3 --no-compare --energy-price 80
+# DLR beside the static rating, at your own prices
+corridor-sim --preset dlr2_der4 --days 3 --compare --energy-price 80
+
+# how much the wind assumption matters
+corridor-sim --dlr 2 --wind-factor 0.6 --days 30
 ```
 
 Runs are slow: roughly 20 s per simulated day when nothing binds and 2–3 minutes
@@ -129,9 +135,9 @@ per day when the corridor curtails heavily, on one core.
 ## The whole matrix: `scripts/run_matrix.py`
 
 Runs presets in parallel, then writes `matrix_summary.csv` and the comparison figures.
-Once every run has finished, each DLR run's summary and cost figure are rewritten
-against the static preset with the same plants and storage (`dlr2_der4` against
-`static_der4`), so no static run is simulated twice.
+With `--compare`, once every run has finished each DLR run's summary and cost figure
+are rewritten against the static preset with the same plants and storage
+(`dlr2_der4` against `static_der4`), so no static run is simulated twice.
 
 ```bash
 python scripts/run_matrix.py --days 30 --jobs 8
@@ -150,6 +156,7 @@ python scripts/run_matrix.py --collect-only      # rebuild table and figures fro
 | `--figures PATH` | `<out>/figures/` | where the comparison figures go |
 | `--no-plots` | plots on | skip the per-scenario figures |
 | `--collect-only` | off | skip running; rebuild the table and figures from `--out` |
+| `--compare` | off | rewrite each DLR run's summary against its static preset |
 
 ## Regenerate the dataset: `data/generate.py`
 

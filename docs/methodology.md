@@ -26,11 +26,13 @@ Mode 0 is the same model at reference conditions and reproduces the declared
 780 A within 0.5 %, so the three modes are directly comparable.
 
 **Operative rating** = min(heat balance, cap × static, series equipment).
-Defaults: cap 1.5 × static, equipment 1250 A. Which one bound is recorded every
-step, beside the uncapped heat balance.
+Defaults: cap 2 × static (1560 A, the twin-bundle static rating), equipment 1600 A.
+Which one bound is recorded every step, beside the uncapped heat balance.
 
 **Wind:** the 100 m wind is brought down to the 15 m conductor height with a log
-law. The corridor has two zones, each with one bearing; the lower zone rating
+law, and 40 % of it is counted as cooling (`--wind-factor`): the rating has to hold
+on the least-cooled span, sheltered and with the wind partly along the line. The
+corridor has two zones, both at a 45° bearing by default; the lower zone rating
 governs.
 
 ## 2. Voltage control
@@ -74,19 +76,22 @@ All four are checked every step.
 
 Inputs of any resolution are interpolated onto the 15-minute grid.
 
-## 7. DLR against static, and the technical cost
+## 7. Reported currents and cost
 
-* A DLR run is reported beside a static-rating run that differs in nothing else.
-  It is reused if one with the same fingerprint (settings, window, input data,
-  model code) is in the output folder, and simulated otherwise.
-* Every headline number is given for both, with the change in its own unit and in %.
-* **Time above 1-Duck static:** share of steps the corridor current exceeds 780 A,
-  i.e. how long a statically rated single conductor would be overloaded by the
-  same flow.
+* **Pushed current:** the highest corridor segment current with every plant at full
+  available output, read before curtailment. **Carried current:** the same after
+  curtailment.
+* **Time above a limit:** share of steps the pushed current exceeds 780 A (a
+  statically rated single conductor would be overloaded), the operative rating (this
+  run curtails for the corridor) or 1560 A (even the twin bundle would be).
 * **Technical cost:** curtailed energy, network losses (all lines and
   transformers) and reactive energy exchanged at the PCC outside the ±33 MVAr
   window. Priced at an energy price (curtailment, losses) and a reactive energy
   price; both are placeholders.
+* **Static comparison (`--compare`):** the same run at the static rating, reused if
+  one with the same fingerprint (settings, window, input data, model code) is in the
+  output folder; headline and cost are then given for both, with the change in its
+  own unit and in %.
 
 ## 8. Not modelled
 

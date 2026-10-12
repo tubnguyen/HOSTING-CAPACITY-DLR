@@ -138,13 +138,17 @@ def test_dlr_runs_are_paired_with_the_static_run_that_shares_their_key():
 
 
 def test_build_outputs_compares_each_dlr_run_with_its_static_partner(tmp_path):
-    """Matrix runs are made without a comparison and paired once all have finished."""
+    """With --compare, DLR runs are paired with their static runs once all have finished."""
     out = tmp_path / "runs"
     for preset, static in (("static_der4", True), ("dlr2_der4", False)):
         cfg = build_config(preset, days=1, label=preset, out_dir=out)
         report.write(cfg, result_frame(8, static=static), out / preset)
     table = run_matrix.build_outputs(out, tmp_path / "figures", redraw=False, make_plots=False)
+    summary = (out / "dlr2_der4" / "dlr2_der4_summary.csv").read_text(encoding="utf-8-sig")
+    assert "HEADLINE: DLR VS STATIC" not in summary, "no comparison unless asked for"
 
+    table = run_matrix.build_outputs(out, tmp_path / "figures", redraw=False, make_plots=False,
+                                     compare=True)
     summary = (out / "dlr2_der4" / "dlr2_der4_summary.csv").read_text(encoding="utf-8-sig")
     assert "HEADLINE: DLR VS STATIC" in summary and "static_der4" in summary
     row = table.set_index("scenario").loc["dlr2_der4"]

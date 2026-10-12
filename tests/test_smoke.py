@@ -5,6 +5,7 @@ import json
 
 import pytest
 
+from corridor_sim import constants as C
 from corridor_sim import dataio, network, plots, report, simulate
 from corridor_sim.cli import main, run_scenario
 from corridor_sim.config import build_config
@@ -49,7 +50,7 @@ def test_reported_reactive_power_is_a_solved_value(full_run):
 def test_conductor_stays_within_design_temperature(full_run):
     cfg, result = full_run
     for zone in network.CORRIDOR_ZONES:
-        assert (result[f"t_cond_{zone}_c"] <= cfg.t_cond_max_c + 1e-6).all()
+        assert (result[f"t_cond_{zone}_c"] <= cfg.t_cond_max_c + C.T_COND_TOLERANCE_C).all()
 
 
 def test_operative_rating_never_exceeds_what_the_scheme_may_use(full_run):
@@ -147,12 +148,14 @@ def test_reports_and_figures_are_written(tmp_path):
     metrics, paths = run_scenario(cfg, make_plots=True, progress=False)
     for path in paths.values():
         assert path.exists() and path.stat().st_size > 0
-    assert set(paths) == {"timeseries", "violations", "metrics", "summary_csv", "summary"}
+    assert set(paths) == {"timeseries", "violations", "metrics", "summary_csv"}
+    assert not (tmp_path / cfg.stem / f"{cfg.stem}_summary.txt").exists()
     meta = json.loads(paths["metrics"].read_text())
     assert meta["scenario"] == cfg.stem
     assert meta["config"]["dlr_mode"] == 2 and meta["static_key"]
     figures = {f.name for f in (tmp_path / cfg.stem / "figures").glob("*.png")}
-    for name in ("rating", "ampacity", "duration", "voltage", "rating_drivers", "storage"):
+    for name in ("current", "duration", "power", "segments", "voltage", "cost",
+                 "rating_drivers", "storage"):
         assert f"{cfg.stem}_{name}.png" in figures
     assert all(f.stat().st_size > 5000 for f in (tmp_path / cfg.stem / "figures").glob("*.png"))
 
@@ -160,21 +163,35 @@ def test_reports_and_figures_are_written(tmp_path):
 def test_summary_tables_and_violations(full_run):
     cfg, result = full_run
     tables = report.summary_tables(cfg, result)
-    for title in ("RUN", "HEADLINE", "TECHNICAL COST", "LINE RATING", "RATING SET BY",
-                  "OPERATIVE AMPACITY BY MONTH", "CURRENT DURATION", "CHECKS", "STORAGE"):
+    for title in ("RUN", "HEADLINE", "CORRIDOR CURRENT", "CORRIDOR POWER FLOW",
+                  "GENERATION BY PLANT", "GRID INTERFACE (PCC)", "VOLTAGE",
+                  "TRANSFORMER LOADING", "TECHNICAL COST", "RATING SET BY", "PERIOD MEANS",
+                  "CURRENT DURATION", "CHECKS", "STORAGE"):
         assert title in tables and not tables[title].empty, title
     report.violations(result)          # must not raise on a clean window
     assert "curtailed" in report.summary_text(cfg, result).lower()
 
 
-def test_the_cost_figure_is_drawn_only_against_a_reference(full_run, tmp_path):
-    """A cost figure left from an earlier run would show a comparison never made."""
+def test_the_pushed_current_is_what_curtailment_starts_from(full_run):
+    """Before curtailment the plants push at least what the corridor then carries."""
+    _, result = full_run
+    pushed = report.pushed_current(result)
+    carried = report.corridor_series(result, "i_{zone}_a", "max")
+    untouched = result["curtailed_total_mw"] < 1e-9
+    assert pushed[untouched].to_numpy() == pytest.approx(carried[untouched].to_numpy())
+    assert pushed.max() >= carried.max() - 1e-6
+
+
+def test_figures_are_drawn_with_and_without_a_reference(full_run, tmp_path):
+    """The cost figure shows the run alone, or set against its static reference."""
     cfg, result = full_run
+    (tmp_path / f"{cfg.stem}_rating.png").write_bytes(b"left by an earlier version")
+    made = plots.run_figures(cfg, result, tmp_path)
+    assert all(path.stat().st_size > 5000 for path in made)
+    assert not (tmp_path / f"{cfg.stem}_rating.png").exists(), "retired figures are removed"
     cost = tmp_path / f"{cfg.stem}_cost.png"
     plots.run_figures(cfg, result, tmp_path, Reference(static_config(cfg), result, "reused"))
     assert cost.exists() and cost.stat().st_size > 5000
-    plots.run_figures(cfg, result, tmp_path)
-    assert not cost.exists()
 
 
 def test_a_dlr_run_is_compared_with_a_static_run_made_alongside_then_reused(tmp_path):

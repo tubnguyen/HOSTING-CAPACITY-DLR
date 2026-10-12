@@ -52,6 +52,11 @@ ALPHA_AL = 0.00403              # aluminium temperature coefficient [1/C]
 # ampacity by about half that, because ampacity goes as 1/sqrt(R).
 COND_AC_DC_RATIO = 1.02
 T_COND_MAX_C = 80.0             # design maximum conductor temperature
+# A current curtailed exactly onto its rating solves back to the design
+# temperature give or take the inverse solve's own tolerance (80.00001 C). That
+# is the conductor at its limit, not over it, so the over-temperature checks
+# allow this much before counting an exceedance.
+T_COND_TOLERANCE_C = 0.01
 
 
 def conductor_resistance(t_c: float) -> float:
@@ -74,16 +79,17 @@ _R50 = COND_R20_OHM_PER_KM * (1.0 + ALPHA_AL * 30.0) * COND_AC_DC_RATIO
 # `equipment_i_ka` is the current rating of the substation plant in series with
 # the line - current transformers, disconnectors, terminations, jumper loops.
 # It comes from the IEC 62271 standard rating series (630, 800, 1250, 1600,
-# 2000, 2500, 3150 A), so it steps rather than tracking the conductor, and a
-# line is normally built with the next size up from its own rating.
+# 2000, 2500, 3150 A), so it steps rather than tracking the conductor. Here it
+# is the first step above twice the static rating, so the 2 x cap, not the
+# substation plant, is what limits a dynamic rating.
 #
 # `label` is the name the summary tables and figures give each build.
 CONDUCTOR_OPTIONS = {
     "single": dict(r_ohm_per_km=round(_R50, 4), x_ohm_per_km=0.400,
-                   c_nf_per_km=9.2, max_i_ka=0.780, equipment_i_ka=1.250,
+                   c_nf_per_km=9.2, max_i_ka=0.780, equipment_i_ka=1.600,
                    bundle_n=1, label="1-Duck"),
     "twin": dict(r_ohm_per_km=round(_R50 / 2, 4), x_ohm_per_km=0.290,
-                 c_nf_per_km=12.6, max_i_ka=1.560, equipment_i_ka=2.000,
+                 c_nf_per_km=12.6, max_i_ka=1.560, equipment_i_ka=3.150,
                  bundle_n=2, label="2-Duck"),
 }
 
@@ -215,7 +221,7 @@ BESS_ACTIVATION_TRIGGER_MW = 1.0
 # round values - 0 runs north-south, 90 east-west - and is set per run through
 # Config (`--azimuth`, `--azimuth-z1`, `--azimuth-z2`). These are the defaults.
 DLR_AZIMUTH_OPTIONS_DEG = (0.0, 30.0, 45.0, 60.0, 90.0)
-DLR_ZONE_AZIMUTH_DEG = {"Z1": 90.0, "Z2": 60.0}
+DLR_ZONE_AZIMUTH_DEG = {"Z1": 45.0, "Z2": 45.0}
 DLR_SITE_ELEVATION_M = 100.0
 DLR_CONDUCTOR_HEIGHT_M = 15.0   # conductor height above ground at mid-span
 DLR_ROUGHNESS_M = 0.30          # surface roughness length for wind extrapolation
@@ -223,24 +229,35 @@ DLR_DISPLACEMENT_M = 0.0
 DLR_LOW_WIND_MS = 0.6           # conservative fixed wind speed used by mode 1
 DLR_REF_HEIGHT_M = 100.0        # height of the reference wind field
 
+# Share of the conductor-height wind that is counted as cooling (mode 2). The
+# log law gives the open-terrain wind at one weather point, but a rating has
+# to hold on the least-cooled span: sheltered by trees and terrain, with the
+# wind along rather than across it, and in the lulls between gusts. Counting
+# all of it (1.0) puts the shipped site at about twice the static rating on
+# average and above three times in winter storms, well beyond what monitored
+# lines show. At 0.4 the mean is about 1.6 x static, winter peaks about 2.7 x,
+# and calm, hot summer hours fall below the static rating.
+DLR_WIND_FACTOR = 0.4
+
 # The conductor is not the only thing in series with the line, and the heat
 # balance only describes the conductor. Two limits sit above it.
 #
 # The first is administrative. A dynamic rating is granted against protection
 # settings, sag and clearance margins and a permit that were all established
 # for the static rating, so operators cap the uplift at a fixed multiple rather
-# than following the heat balance wherever the weather takes it. Published
-# deployments sit around 1.3 to 1.5.
+# than following the heat balance wherever the weather takes it. The default of
+# 2 x static equals the static rating of the twin-bundle reinforcement, so a
+# dynamic rating can at most match what reconductoring would give.
 #
 # The second is physical: the substation plant the current passes through on
 # its way to the line - current transformers, disconnectors, terminations,
 # jumper loops - is not cooled by the wind and carries its own nameplate.
-# In practice this is what stops a DLR scheme well before the conductor does,
-# and it is the single most common reason a study's headline uplift is not
-# realisable. See CONDUCTOR_OPTIONS["..."]["equipment_i_ka"].
+# In practice this often stops a DLR scheme before the conductor does, and it
+# is a common reason a study's headline uplift is not realisable. See
+# CONDUCTOR_OPTIONS["..."]["equipment_i_ka"].
 #
 # Set DLR_CAP_RATIO to None to rate the bare conductor with no cap at all.
-DLR_CAP_RATIO = 1.5
+DLR_CAP_RATIO = 2.0
 
 # Bisection ceiling for the inverse (temperature) solve. A conductor that
 # needed more than this is far outside anything the study should report, so the

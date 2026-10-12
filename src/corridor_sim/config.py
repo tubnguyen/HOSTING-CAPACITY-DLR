@@ -63,6 +63,7 @@ class Config:
     roughness_m: float = C.DLR_ROUGHNESS_M
     displacement_m: float = C.DLR_DISPLACEMENT_M
     low_wind_ms: float = C.DLR_LOW_WIND_MS
+    dlr_wind_factor: float = C.DLR_WIND_FACTOR      # share of the wind that cools (mode 2)
     site_elevation_m: float = C.DLR_SITE_ELEVATION_M
     t_cond_max_c: float = C.T_COND_MAX_C
 
@@ -233,7 +234,7 @@ _MATRIX_COLUMNS = {
 }
 
 PRESETS = {
-    "baseline": dict(conductor="single", control_mode="cosphi", dlr_mode=0, der_enabled=[]),
+    "baseline": dict(conductor="single", control_mode="droop", dlr_mode=0, der_enabled=[]),
 }
 for _tag, (_cond, _dlr) in _MATRIX_COLUMNS.items():
     for _n, _ders in _DER_STEPS.items():
@@ -328,6 +329,7 @@ def validate(cfg: Config) -> None:
     require(0.0 <= cfg.storage_contract_mw <= cfg.storage_p_mw,
             "storage_contract_mw exceeds the storage rating")
     require(cfg.roughness_m > 0, "roughness_m must be positive")
+    require(0.0 < cfg.dlr_wind_factor <= 1.0, "dlr_wind_factor must be in (0, 1]")
     require(cfg.conductor_height_m - cfg.displacement_m > cfg.roughness_m,
             "conductor height above displacement must exceed the roughness length")
     require(cfg.days is None or cfg.days > 0, "days must be positive")
@@ -367,7 +369,7 @@ class RunOptions(NamedTuple):
     """Command-line choices about what a run produces, not what it models."""
 
     plots: bool = True
-    compare: bool = True        # report a DLR run against a static-rating run
+    compare: bool = False       # also simulate the static case and compare
 
 
 def parse_args(argv=None):
@@ -395,6 +397,9 @@ def parse_args(argv=None):
                    help=f"bearing of zone Z1 (default {C.DLR_ZONE_AZIMUTH_DEG['Z1']:.0f})")
     p.add_argument("--azimuth-z2", dest="azimuth_z2_deg", type=float, choices=azimuths,
                    help=f"bearing of zone Z2 (default {C.DLR_ZONE_AZIMUTH_DEG['Z2']:.0f})")
+    p.add_argument("--wind-factor", dest="dlr_wind_factor", type=float,
+                   help="share of the conductor-height wind counted as cooling in mode 2 "
+                        f"(default {C.DLR_WIND_FACTOR:g})")
     p.add_argument("--control", dest="control_mode", choices=["droop", "cosphi"])
     p.add_argument("--der", help="comma-separated DER to connect, e.g. WF_1,WF_2,PV_1")
     p.add_argument("--storage", dest="storage_enabled", action="store_true", default=None)
@@ -413,8 +418,8 @@ def parse_args(argv=None):
                    help="EUR/MVArh for reactive energy outside the PCC window "
                         f"(default {C.REACTIVE_PRICE_EUR_MVARH:g})")
     p.add_argument("--no-plots", dest="plots", action="store_false", default=True)
-    p.add_argument("--no-compare", dest="compare", action="store_false", default=True,
-                   help="skip the static-rating run a DLR run is compared against")
+    p.add_argument("--compare", action="store_true",
+                   help="also run the same case at the static rating and compare the two")
     a = p.parse_args(argv)
 
     # An unset flag means "do not override", so None values are dropped here
