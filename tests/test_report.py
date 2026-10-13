@@ -131,24 +131,36 @@ def test_technical_cost_is_the_energy_quantities_at_their_prices():
     assert cost.loc["Curtailed energy", "Price"] == "40 €/MWh"
 
 
-def test_pushed_current_is_measured_against_every_limit():
+def test_the_current_from_all_plants_is_measured_against_every_limit():
     """780 A exactly is at the rating, not above it."""
     frame = _frame(4, i_Z1_uncurtailed_a=[800.0, 700.0, 1600.0, 780.0],
                    i_Z2_uncurtailed_a=[500.0, 500.0, 500.0, 1200.0])
     m = report.metrics(build_config("dlr2_der4"), frame)
-    assert m["pushed_current_max_a"] == pytest.approx(1600.0)
-    assert m["hours_pushed_above_single_static"] == pytest.approx(3 * C.DT_H)
-    assert m["pushed_above_single_static_pct"] == pytest.approx(75.0)
-    assert m["pushed_above_rating_pct"] == pytest.approx(50.0)      # 1600 and 1200 > 1170
-    assert m["pushed_above_twin_static_pct"] == pytest.approx(25.0)
+    assert m["plant_current_max_a"] == pytest.approx(1600.0)
+    assert m["plant_above_single_static_pct"] == pytest.approx(75.0)
+    assert m["hours_plant_above_single_static"] == pytest.approx(3 * C.DT_H)
+    assert m["plant_above_rating_pct"] == pytest.approx(50.0)       # 1600 and 1200 > 1170
+    assert m["hours_plant_above_rating"] == pytest.approx(2 * C.DT_H)
+    assert m["plant_above_twin_static_pct"] == pytest.approx(25.0)
+    assert m["hours_plant_above_twin_static"] == pytest.approx(C.DT_H)
 
 
-def test_a_result_saved_without_the_pushed_current_still_reports():
+def test_thermal_loading_is_the_current_from_all_plants_over_the_rating():
+    """The figure a reader sizes curtailment from: how far over the rating."""
+    frame = _frame(4, i_Z1_uncurtailed_a=[1170.0, 2340.0, 585.0, 1170.0],
+                   i_Z2_uncurtailed_a=[0.0] * 4)
+    m = report.metrics(build_config("dlr2_der4"), frame)      # operative rating 1170 A
+    assert m["plant_loading_max_pct"] == pytest.approx(200.0)
+    assert m["plant_loading_mean_pct"] == pytest.approx(112.5)
+
+
+def test_a_result_saved_without_the_current_from_all_plants_still_reports():
     frame = _frame(4).drop(columns=["i_Z1_uncurtailed_a", "i_Z2_uncurtailed_a"])
     m = report.metrics(build_config("dlr2_der4"), frame)
-    assert m["pushed_current_max_a"] != m["pushed_current_max_a"]      # nan
+    assert m["plant_current_max_a"] != m["plant_current_max_a"]        # nan
+    assert m["plant_loading_max_pct"] != m["plant_loading_max_pct"]
     tables = report.summary_tables(build_config("dlr2_der4"), frame)
-    assert tables["CORRIDOR CURRENT"]["Current"].iloc[0].startswith("Carried")
+    assert tables["CORRIDOR CURRENT"]["Current"].iloc[0] == "Current after curtailment"
 
 
 def test_export_and_reactive_exchange_are_time_weighted_and_signed_as_measured():
@@ -249,7 +261,15 @@ def test_means_are_by_calendar_month_once_the_window_is_four_weeks_or_more():
 def test_a_short_window_has_one_mean_over_the_period():
     means = report.period_means(_frame(8, i_Z1_uncurtailed_a=[400.0, 600.0] * 4))
     assert list(means.index) == ["01 Jan to 01 Jan 2024"]
-    assert means["pushed_mean"].iloc[0] == pytest.approx(550.0)    # Z2 is 500, so 500 or 600
+    assert means["plant_mean"].iloc[0] == pytest.approx(550.0)     # Z2 is 500, so 500 or 600
+
+
+def test_period_means_carry_the_range_the_period_covered():
+    """A monthly mean on its own hides whether the month swung across the band."""
+    means = report.period_means(_frame(8, i_Z1_uncurtailed_a=[400.0, 900.0] * 4))
+    assert means["plant_min"].iloc[0] == pytest.approx(500.0)      # Z2 holds the floor at 500
+    assert means["plant_max"].iloc[0] == pytest.approx(900.0)
+    assert means["plant_min"].iloc[0] <= means["plant_mean"].iloc[0] <= means["plant_max"].iloc[0]
 
 
 def test_duration_points_run_from_the_maximum_to_the_minimum():
@@ -258,6 +278,14 @@ def test_duration_points_run_from_the_maximum_to_the_minimum():
     assert points.loc[0, "carried_a"] == pytest.approx(500.0)
     assert points.loc[50, "carried_a"] == pytest.approx(300.0)
     assert points.loc[100, "carried_a"] == pytest.approx(100.0)
+
+
+def test_duration_points_give_each_share_of_time_in_hours_as_well():
+    """The reader needs the exposure in hours, not only as a share."""
+    points = report.duration_points(_frame(8)).set_index("pct")
+    assert points.loc[100, "hours"] == pytest.approx(8 * C.DT_H)
+    assert points.loc[50, "hours"] == pytest.approx(4 * C.DT_H)
+    assert points.loc[0, "hours"] == pytest.approx(0.0)
 
 
 def test_summary_csv_is_a_sequence_of_titled_tables(tmp_path):

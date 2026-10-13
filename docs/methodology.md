@@ -78,20 +78,29 @@ Inputs of any resolution are interpolated onto the 15-minute grid.
 
 ## 7. Reported currents and cost
 
-* **Pushed current:** the highest corridor segment current with every plant at full
-  available output, read before curtailment. **Carried current:** the same after
-  curtailment.
-* **Time above a limit:** share of steps the pushed current exceeds 780 A (a
+* **Current from all plants:** the highest corridor segment current with every
+  connected plant at full available output, read before curtailment. **Current
+  after curtailment:** the same once curtailment has brought it onto the operative
+  rating. The difference between them is the curtailment, so the exceedance below
+  is enough to size it.
+* **Time above a limit:** how long the current from all plants exceeds 780 A (a
   statically rated single conductor would be overloaded), the operative rating (this
-  run curtails for the corridor) or 1560 A (even the twin bundle would be).
+  run curtails for the corridor) or 1560 A (even the twin bundle would be). Each is
+  given as a share of the window and in hours.
+* **Thermal loading:** the same current as a percentage of a rating. Against the
+  operative rating it says what has to be curtailed; against the 780 A static rating
+  it says how far past the as-built conductor the generation reaches.
 * **Technical cost:** curtailed energy, network losses (all lines and
   transformers) and reactive energy exchanged at the PCC outside the ±33 MVAr
   window. Priced at an energy price (curtailment, losses) and a reactive energy
-  price; both are placeholders.
+  price; both are placeholders. Reported in the summary tables and the metrics,
+  not as a figure.
 * **Static comparison (`--compare`):** the same run at the static rating, reused if
   one with the same fingerprint (settings, window, input data, model code) is in the
   output folder; headline and cost are then given for both, with the change in its
-  own unit and in %.
+  own unit and in %. The figures describe one run each.
+
+Column names are decoded in [outputs.md](outputs.md).
 
 ## 8. Not modelled
 

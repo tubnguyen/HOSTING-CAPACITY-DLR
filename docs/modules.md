@@ -19,7 +19,7 @@
 | [`simulate.py`](../src/corridor_sim/simulate.py) | The 15-minute time loop that ties everything together and records one row per step. |
 | [`reference.py`](../src/corridor_sim/reference.py) | The static-rating run a DLR run is compared against: its settings, fingerprint and lookup for reuse. |
 | [`report.py`](../src/corridor_sim/report.py) | Turns the time series into metrics, the summary CSV of network, cost and check tables, the console summary and the violation table. |
-| [`plots.py`](../src/corridor_sim/plots.py) | Figures for one run (corridor current, current duration, power flow, current along the corridor, voltage, technical cost, rating drivers, storage) and for the scenario matrix. |
+| [`plots.py`](../src/corridor_sim/plots.py) | Figures for one run (corridor current, current duration, power flow, current along the corridor, voltage, rating drivers, storage) and for the scenario matrix. |
 
 ## Scripts and data
 

@@ -73,18 +73,33 @@ Each run writes to `runs/<label>/`:
 | `<label>_timeseries.csv` | every quantity per step: flows, voltages, ratings and what bound them, the current before and after curtailment, conductor temperature, curtailment and its cause, tap and reactor operations |
 | `<label>_violations.csv` | every step still violating a limit after control |
 | `<label>_metrics.json` | every headline number, plus the run's full settings |
-| `figures/` | corridor current (15-minute series and monthly means), current duration, power flow, current along the corridor, voltage, technical cost, rating drivers (mode 2), battery operation |
+| `figures/` | corridor current (15-minute series and monthly means), current duration, power flow, current along the corridor, voltage, rating drivers (mode 2), battery operation |
 
-The corridor current is shown three ways: **pushed** (every plant at full available
-output, before curtailment), **carried** (after curtailment) and the **ratings** it is
-held to (static 780 A, the DLR heat balance and operative rating, the 1560 A
-reinforcement). The technical cost is curtailed energy, network losses and reactive
-energy outside the PCC window, in MWh and MVArh and, at indicative prices
-(`--energy-price`, `--reactive-price`), in k€.
+**Every column name, table and figure explained: [docs/outputs.md](docs/outputs.md).**
+
+The corridor current is reported two ways. The **current from all plants** is what
+every connected plant would produce at full available output, read before
+curtailment; the **current after curtailment** is what the corridor then carries.
+Both are measured against the ratings the corridor is held to: 780 A static on the
+as-built conductor, the DLR heat balance and the operative rating above it, and the
+1560 A twin-bundle reinforcement.
+
+The figures are built around the first of those and around thermal loading. They
+give how far above each rating the generation reaches and for how long, as a share
+of the window and in hours, with a second scale reading amperes as a percentage of
+the 780 A static rating. The excess over the operative rating is exactly what
+curtailment removes, so the exceedance sizes the curtailment without a curve of its
+own.
+
+The technical cost - curtailed energy, network losses and reactive energy outside
+the PCC window, in MWh and MVArh and, at indicative prices (`--energy-price`,
+`--reactive-price`), in k€ - is in the summary tables and the metrics. It has no
+figure.
 
 A run reports itself alone. `--compare` also runs the same case at the static rating
-and sets the two side by side; the static case is slow, so it is reused if a matching
-run is already in the output folder.
+and sets the two side by side in the headline and cost tables; the static case is
+slow, so it is reused if a matching run is already in the output folder. The figures
+describe one run each.
 
 The matrix runner adds `matrix_summary.csv` and comparison figures.
 
@@ -107,6 +122,7 @@ python scripts/run_matrix.py --days 30 --jobs 8    # all 21 presets in parallel
 | File | What is in it |
 |---|---|
 | [docs/commands.md](docs/commands.md) | all commands and options, presets, Python API |
+| [docs/outputs.md](docs/outputs.md) | output files, what every column name means, tables and figures |
 | [docs/methodology.md](docs/methodology.md) | methodology |
 | [docs/network.md](docs/network.md) | example network and parameters |
 | [docs/modules.md](docs/modules.md) | purpose of each Python file |

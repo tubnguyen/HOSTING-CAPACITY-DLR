@@ -72,6 +72,9 @@ static rating and pass three times it in winter storms.
 | `--no-plots` | flag | plots on | skip the figures |
 | `--compare` | flag | off | also run the static case and compare (slow the first time) |
 
+What each output file holds, and what every column name means:
+[outputs.md](outputs.md).
+
 ### Technical cost prices
 
 | Option | Values | Default | What it does |
@@ -80,7 +83,7 @@ static rating and pass three times it in winter storms.
 | `--reactive-price EUR` | number ≥ 0 | `5` | €/MVArh for reactive energy outside the ±33 MVAr PCC window |
 
 Both are round placeholders for the cost columns of the summary; they change no
-simulated result.
+simulated result, and there is no cost figure to redraw.
 
 A bad flag or a dataset that does not cover the window exits with code 2 and a
 one-line message.
@@ -135,9 +138,10 @@ per day when the corridor curtails heavily, on one core.
 ## The whole matrix: `scripts/run_matrix.py`
 
 Runs presets in parallel, then writes `matrix_summary.csv` and the comparison figures.
-With `--compare`, once every run has finished each DLR run's summary and cost figure
-are rewritten against the static preset with the same plants and storage
-(`dlr2_der4` against `static_der4`), so no static run is simulated twice.
+With `--compare`, once every run has finished each DLR run's summary is rewritten
+against the static preset with the same plants and storage (`dlr2_der4` against
+`static_der4`), so no static run is simulated twice. The figures describe one run
+each and are unaffected.
 
 ```bash
 python scripts/run_matrix.py --days 30 --jobs 8
