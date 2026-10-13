@@ -265,11 +265,18 @@ def test_a_short_window_has_one_mean_over_the_period():
 
 
 def test_period_means_carry_the_range_the_period_covered():
-    """A monthly mean on its own hides whether the month swung across the band."""
+    """A monthly mean on its own hides whether the month swung across the band.
+
+    The full range is reported, and the middle half inside it: on generation
+    the range runs from a calm hour to the cap every month, so on its own it
+    is the same band on every row.
+    """
     means = report.period_means(_frame(8, i_Z1_uncurtailed_a=[400.0, 900.0] * 4))
-    assert means["plant_min"].iloc[0] == pytest.approx(500.0)      # Z2 holds the floor at 500
-    assert means["plant_max"].iloc[0] == pytest.approx(900.0)
-    assert means["plant_min"].iloc[0] <= means["plant_mean"].iloc[0] <= means["plant_max"].iloc[0]
+    row = means.iloc[0]
+    assert row["plant_min"] == pytest.approx(500.0)                # Z2 holds the floor at 500
+    assert row["plant_max"] == pytest.approx(900.0)
+    assert row["plant_min"] <= row["plant_p25"] <= row["plant_mean"] <= row["plant_p75"]
+    assert row["plant_p75"] <= row["plant_max"]
 
 
 def test_duration_points_run_from_the_maximum_to_the_minimum():

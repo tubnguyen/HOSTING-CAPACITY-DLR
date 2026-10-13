@@ -320,13 +320,20 @@ def period_means(result: pd.DataFrame) -> pd.DataFrame:
     grouped = frame.groupby("key")
     table = pd.DataFrame({
         "hours": grouped.size() * C.DT_H,
-        # Mean, and the range the month spans: the monthly figure alone hides
-        # whether a month sat near its mean or swung across the whole band.
+        # Mean, the range the month spans, and the middle half of it. The
+        # monthly figure alone hides whether a month sat near its mean or
+        # swung across the whole band - but on wind the full range is nearly
+        # always "almost nothing to the cap", so the quartiles are what say
+        # where the month actually lived.
         "plant_mean": grouped["plant"].mean(),
         "plant_min": grouped["plant"].min(),
+        "plant_p25": grouped["plant"].quantile(0.25),
+        "plant_p75": grouped["plant"].quantile(0.75),
         "plant_max": grouped["plant"].max(),
         "carried_mean": grouped["carried"].mean(),
         "carried_min": grouped["carried"].min(),
+        "carried_p25": grouped["carried"].quantile(0.25),
+        "carried_p75": grouped["carried"].quantile(0.75),
         "carried_max": grouped["carried"].max(),
         "rating_mean": grouped["rating"].mean(),
         "weather_mean": grouped["weather"].mean(),
@@ -696,7 +703,8 @@ def _binding_table(cfg, m: dict) -> pd.DataFrame:
 def _period_table(result: pd.DataFrame) -> pd.DataFrame:
     means = period_means(result)
     rows = [[name, _num(row.hours, "h"), _num(row.plant_mean, "A"), _num(row.plant_min, "A"),
-             _num(row.plant_max, "A"), _num(row.carried_mean, "A"), _num(row.rating_mean, "A"),
+             _num(row.plant_p25, "A"), _num(row.plant_p75, "A"), _num(row.plant_max, "A"),
+             _num(row.carried_mean, "A"), _num(row.rating_mean, "A"),
              _num(row.weather_mean, "A"), _num(row.above_static_pct, "%"),
              _num(row.hours_above_static, "h"), _num(row.above_rating_pct, "%"),
              _num(row.hours_above_rating, "h"), _num(row.available_mwh, "MWh"),
@@ -704,7 +712,8 @@ def _period_table(result: pd.DataFrame) -> pd.DataFrame:
              _num(row.net_export_mwh, "MWh"), _num(row.losses_mwh, "MWh")]
             for name, row in means.iterrows()]
     columns = ["Period", "Hours", "All plants mean (A)", "All plants min (A)",
-               "All plants max (A)", "After curtailment mean (A)", "Operative mean (A)",
+               "All plants P25 (A)", "All plants P75 (A)", "All plants max (A)",
+               "After curtailment mean (A)", "Operative mean (A)",
                "Heat balance mean (A)", f"Above {SINGLE_STATIC_A:.0f} A (%)",
                f"Above {SINGLE_STATIC_A:.0f} A (h)", "Above the rating (%)",
                "Above the rating (h)", "Available (MWh)", "Delivered (MWh)",

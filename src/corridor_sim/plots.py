@@ -224,20 +224,26 @@ def corridor_current(cfg, result: pd.DataFrame, path: Path):
     ax.annotate(note + ".", xy=(0.0, 1.0), xycoords="axes fraction", xytext=(0, 5),
                 textcoords="offset points", ha="left", va="bottom", fontsize=8.5, color=INK_2)
 
-    # Monthly means as a line, with the band each month covered. A bar per
-    # month gives the mean alone; the band says whether the month sat near it.
+    # Monthly means as a line, with the range each month covered. Two bands,
+    # not one: generation runs from a calm hour to the cap every month, so the
+    # full range is the same slab on every column and says nothing on its own.
+    # The middle half inside it is what shows the month moving.
     means = report.period_means(result)
     low, high = means[f"{prefix}_min"], means[f"{prefix}_max"]
+    p25, p75 = means[f"{prefix}_p25"], means[f"{prefix}_p75"]
     n = len(means)
     x = np.arange(n)
     if n >= 2:
-        axm.fill_between(x, low, high, color=ORANGE, alpha=0.16, lw=0, zorder=0)
+        axm.fill_between(x, low, high, color=ORANGE, alpha=0.11, lw=0, zorder=0)
+        axm.fill_between(x, p25, p75, color=ORANGE, alpha=0.26, lw=0, zorder=0)
     else:
-        axm.vlines(x, low, high, color=ORANGE, alpha=0.3, lw=14)
-    band = "Range over the period" if report.is_short_window(result) else "Range in the month"
+        axm.vlines(x, low, high, color=ORANGE, alpha=0.18, lw=16)
+        axm.vlines(x, p25, p75, color=ORANGE, alpha=0.32, lw=16)
+    period = "the period" if report.is_short_window(result) else "the month"
     mhandles = [axm.plot(x, means[f"{prefix}_mean"], color=ORANGE, lw=1.8, marker="o", ms=4,
                          label=f"Mean {name[0].lower() + name[1:]}")[0],
-                Patch(color=ORANGE, alpha=0.16, lw=0, label=band)]
+                Patch(color=ORANGE, alpha=0.26, lw=0, label=f"Middle half of {period}"),
+                Patch(color=ORANGE, alpha=0.11, lw=0, label=f"Full range in {period}")]
     if cfg.dlr_mode > 0 and means["rating_mean"].notna().any():
         mhandles.insert(1, axm.plot(x, means["rating_mean"], color=BLUE, lw=1.6, marker="o",
                                     ms=4, label="Mean operative DLR rating")[0])
@@ -247,7 +253,7 @@ def corridor_current(cfg, result: pd.DataFrame, path: Path):
     axm.set_ylim(0, max(float(np.nanmax(high.to_numpy())), report.TWIN_STATIC_A) * 1.14)
     _loading_axis(axm)
     _clean(axm, "Amperes", "Mean over the period" if report.is_short_window(result)
-           else "Monthly mean, with the range each month covered")
+           else "Monthly mean, the middle half of each month and its full range")
     _legend_below(ax, ncols=3, pad=0.20, handles=handles)
     _legend_below(axm, ncols=3, pad=0.22, handles=mhandles)
     fig.savefig(path, bbox_inches="tight")
