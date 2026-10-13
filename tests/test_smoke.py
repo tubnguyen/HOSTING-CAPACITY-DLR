@@ -9,7 +9,7 @@ from corridor_sim import constants as C
 from corridor_sim import dataio, network, plots, report, simulate
 from corridor_sim.cli import main, run_scenario
 from corridor_sim.config import build_config
-from corridor_sim.reference import Reference, static_config
+from corridor_sim.reference import static_config
 
 HOURS = 6
 
@@ -154,9 +154,10 @@ def test_reports_and_figures_are_written(tmp_path):
     assert meta["scenario"] == cfg.stem
     assert meta["config"]["dlr_mode"] == 2 and meta["static_key"]
     figures = {f.name for f in (tmp_path / cfg.stem / "figures").glob("*.png")}
-    for name in ("current", "duration", "power", "segments", "voltage", "cost",
+    for name in ("current", "duration", "power", "segments", "voltage",
                  "rating_drivers", "storage"):
         assert f"{cfg.stem}_{name}.png" in figures
+    assert f"{cfg.stem}_cost.png" not in figures, "the cost figure was retired"
     assert all(f.stat().st_size > 5000 for f in (tmp_path / cfg.stem / "figures").glob("*.png"))
 
 
@@ -172,26 +173,25 @@ def test_summary_tables_and_violations(full_run):
     assert "curtailed" in report.summary_text(cfg, result).lower()
 
 
-def test_the_pushed_current_is_what_curtailment_starts_from(full_run):
-    """Before curtailment the plants push at least what the corridor then carries."""
+def test_the_current_from_all_plants_is_what_curtailment_starts_from(full_run):
+    """Before curtailment the plants produce at least what the corridor carries."""
     _, result = full_run
-    pushed = report.pushed_current(result)
-    carried = report.corridor_series(result, "i_{zone}_a", "max")
+    plant = report.plant_current(result)
+    carried = report.carried_current(result)
     untouched = result["curtailed_total_mw"] < 1e-9
-    assert pushed[untouched].to_numpy() == pytest.approx(carried[untouched].to_numpy())
-    assert pushed.max() >= carried.max() - 1e-6
+    assert plant[untouched].to_numpy() == pytest.approx(carried[untouched].to_numpy())
+    assert plant.max() >= carried.max() - 1e-6
 
 
-def test_figures_are_drawn_with_and_without_a_reference(full_run, tmp_path):
-    """The cost figure shows the run alone, or set against its static reference."""
+def test_retired_figures_are_removed_when_a_run_is_drawn_again(full_run, tmp_path):
+    """A folder never mixes two versions: the cost figure goes with the rest."""
     cfg, result = full_run
-    (tmp_path / f"{cfg.stem}_rating.png").write_bytes(b"left by an earlier version")
+    for name in ("rating", "cost"):
+        (tmp_path / f"{cfg.stem}_{name}.png").write_bytes(b"left by an earlier version")
     made = plots.run_figures(cfg, result, tmp_path)
     assert all(path.stat().st_size > 5000 for path in made)
-    assert not (tmp_path / f"{cfg.stem}_rating.png").exists(), "retired figures are removed"
-    cost = tmp_path / f"{cfg.stem}_cost.png"
-    plots.run_figures(cfg, result, tmp_path, Reference(static_config(cfg), result, "reused"))
-    assert cost.exists() and cost.stat().st_size > 5000
+    for name in ("rating", "cost"):
+        assert not (tmp_path / f"{cfg.stem}_{name}.png").exists()
 
 
 def test_a_dlr_run_is_compared_with_a_static_run_made_alongside_then_reused(tmp_path):

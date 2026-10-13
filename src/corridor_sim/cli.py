@@ -15,7 +15,7 @@ def _write(cfg, result, make_plots: bool, ref=None):
     out_dir = Path(cfg.out_dir) / cfg.stem
     paths = report.write(cfg, result, out_dir, ref)
     if make_plots:
-        plots.run_figures(cfg, result, out_dir / "figures", ref)
+        plots.run_figures(cfg, result, out_dir / "figures")
     return out_dir, paths
 
 

@@ -1,11 +1,23 @@
 """Run outputs: one summary CSV of titled tables, per-step results and metrics.
 
-The summary leads with how the network behaved: the current the plants push
-into the corridor against what each limit allows, the power flow along the
-corridor, generation by plant, the exchange at the grid interface, voltages
-and transformer loading. The technical cost - curtailed energy, losses and
-reactive exchange outside the window - follows, in energy units and in euros
-at indicative prices.
+The summary leads with how the network behaved: the current from all plants
+against what each limit allows, how far above each limit it reaches and for
+how long, the power flow along the corridor, generation by plant, the
+exchange at the grid interface, voltages and transformer loading. The
+technical cost - curtailed energy, losses and reactive exchange outside the
+window - follows, in energy units and in euros at indicative prices.
+
+Two currents are reported throughout, and they are named for what they are
+rather than for the curtailment between them:
+
+* **current from all plants** - the corridor current with every connected
+  plant at its full available output, read before curtailment acts. This is
+  the demand the corridor is asked to carry.
+* **current after curtailment** - the same current once curtailment has
+  brought it onto the operative rating. This is what the corridor carries.
+
+The gap between them is the curtailment, so how far and how long the current
+from all plants exceeds a rating says how much curtailment that rating costs.
 
 With a static reference (reference.py, `--compare`) the headline and cost
 tables also give the static run, the change in the quantity's own unit and
@@ -76,17 +88,21 @@ def corridor_series(frame: pd.DataFrame, template: str, how: str) -> pd.Series:
     return zones.max(axis=1) if how == "max" else zones.min(axis=1)
 
 
-def pushed_current(frame: pd.DataFrame) -> pd.Series | None:
-    """Corridor current with every plant at its full available output [A].
+def plant_current(frame: pd.DataFrame) -> pd.Series | None:
+    """Corridor current with every connected plant at full available output [A].
 
-    Read before curtailment, so it is the current the generation would push
-    through the corridor if nothing held it back. None for a result saved
-    before this was recorded.
+    Read before curtailment acts, so it is the current the generation asks
+    the corridor to carry. None for a result saved before this was recorded.
     """
     columns = [f"i_{z}_uncurtailed_a" for z in CORRIDOR_ZONES]
     if not all(c in frame.columns for c in columns):
         return None
     return corridor_series(frame, "i_{zone}_uncurtailed_a", "max")
+
+
+def carried_current(frame: pd.DataFrame) -> pd.Series:
+    """Corridor current after curtailment, the highest on any segment [A]."""
+    return corridor_series(frame, "i_{zone}_a", "max")
 
 
 def governing_binding(frame: pd.DataFrame) -> np.ndarray:
@@ -117,8 +133,12 @@ def metrics(cfg, result: pd.DataFrame) -> dict:
     reactive_outside = _energy_mwh(ok["q_exceedance_mvar"])
     loading = corridor_series(ok, "loading_{zone}_pct", "max")
     rating = corridor_series(ok, "rating_{zone}_a", "min")
-    current = corridor_series(ok, "i_{zone}_a", "max")
-    pushed = pushed_current(ok)
+    current = carried_current(ok)
+    plant = plant_current(ok)
+    # Thermal loading of the corridor by the current from all plants: what the
+    # conductor would be asked to carry, as a share of what it may carry. Over
+    # 100 % is the exceedance curtailment then has to remove.
+    plant_loading = 100.0 * plant / rating if plant is not None else None
     binding = governing_binding(ok)
     rating_mean = float(rating.mean())
     weather_cols = [f"rating_{z}_weather_a" for z in CORRIDOR_ZONES
@@ -167,18 +187,17 @@ def metrics(cfg, result: pd.DataFrame) -> dict:
         "rating_by_equipment_pct": _share(binding == "equipment"),
         "corridor_current_mean_a": float(current.mean()),
         "corridor_current_max_a": float(current.max()),
-        # What the plants push into the corridor before any curtailment,
-        # against a single conductor's static rating, against the operative
-        # rating of this run and against the twin-bundle reinforcement.
-        "pushed_current_mean_a": float(pushed.mean()) if pushed is not None else nan,
-        "pushed_current_max_a": float(pushed.max()) if pushed is not None else nan,
-        "hours_pushed_above_single_static": (float((pushed > SINGLE_STATIC_A).sum() * C.DT_H)
-                                             if pushed is not None else nan),
-        "pushed_above_single_static_pct": (_share(pushed > SINGLE_STATIC_A)
-                                           if pushed is not None else nan),
-        "pushed_above_rating_pct": _share(pushed > rating) if pushed is not None else nan,
-        "pushed_above_twin_static_pct": (_share(pushed > TWIN_STATIC_A)
-                                         if pushed is not None else nan),
+        # The current from all plants before any curtailment, measured against
+        # a single conductor's static rating, against the operative rating of
+        # this run and against the twin-bundle reinforcement. Each limit gets
+        # both the share of time it is exceeded and the hours behind it.
+        "plant_current_mean_a": float(plant.mean()) if plant is not None else nan,
+        "plant_current_max_a": float(plant.max()) if plant is not None else nan,
+        # Thermal loading by the current from all plants: the peak says how
+        # far over the conductor's capacity the generation reaches, the mean
+        # how hard it works it.
+        "plant_loading_mean_pct": float(plant_loading.mean()) if plant is not None else nan,
+        "plant_loading_max_pct": float(plant_loading.max()) if plant is not None else nan,
         "corridor_loading_mean_pct": float(loading.mean()),
         "corridor_loading_p95_pct": float(loading.quantile(0.95)),
         "hours_corridor_over_limit": float((loading > 100.0).sum() * C.DT_H),
@@ -210,6 +229,16 @@ def metrics(cfg, result: pd.DataFrame) -> dict:
     }
     out["technical_cost_keur"] = (out["cost_curtailed_keur"] + out["cost_losses_keur"]
                                   + out["cost_reactive_keur"])
+
+    # Time the current from all plants exceeds each limit, as a share and in
+    # hours. The reader needs both: the share compares windows of different
+    # length, the hours size the exposure inside this one.
+    for key, limit in (("single_static", SINGLE_STATIC_A), ("rating", rating),
+                       ("twin_static", TWIN_STATIC_A)):
+        above = plant > limit if plant is not None else None
+        out[f"plant_above_{key}_pct"] = _share(above) if above is not None else nan
+        out[f"hours_plant_above_{key}"] = (float(above.sum() * C.DT_H)
+                                           if above is not None else nan)
 
     for cause in ("corridor", "dso_trafo", "plant", "overvoltage", "export_cap"):
         mask = ok["curtail_cause"] == cause
@@ -266,21 +295,21 @@ def period_means(result: pd.DataFrame) -> pd.DataFrame:
         keys = np.array([position[month] for month in months])
         names = [month.strftime("%b %Y") for month in order]
 
-    pushed = pushed_current(ok)
+    plant = plant_current(ok)
     rating = corridor_series(ok, "rating_{zone}_a", "min")
     weather = (corridor_series(ok, "rating_{zone}_weather_a", "min")
                if all(f"rating_{z}_weather_a" in ok.columns for z in CORRIDOR_ZONES)
                else pd.Series(np.nan, index=ok.index))
     missing = np.full(len(ok), np.nan)
     frame = pd.DataFrame({
-        "pushed": pushed.to_numpy() if pushed is not None else missing,
-        "carried": corridor_series(ok, "i_{zone}_a", "max").to_numpy(),
+        "plant": plant.to_numpy() if plant is not None else missing,
+        "carried": carried_current(ok).to_numpy(),
         "rating": rating.to_numpy(),
         "weather": weather.to_numpy(),
-        "above_static": ((pushed > SINGLE_STATIC_A).to_numpy(dtype=float)
-                         if pushed is not None else missing),
-        "above_rating": ((pushed > rating).to_numpy(dtype=float)
-                         if pushed is not None else missing),
+        "above_static": ((plant > SINGLE_STATIC_A).to_numpy(dtype=float)
+                         if plant is not None else missing),
+        "above_rating": ((plant > rating).to_numpy(dtype=float)
+                         if plant is not None else missing),
         "available": ok["available_total_mw"].to_numpy(),
         "delivered": realised_generation(ok).to_numpy(),
         "curtailed": ok["curtailed_total_mw"].to_numpy(),
@@ -291,13 +320,20 @@ def period_means(result: pd.DataFrame) -> pd.DataFrame:
     grouped = frame.groupby("key")
     table = pd.DataFrame({
         "hours": grouped.size() * C.DT_H,
-        "pushed_mean": grouped["pushed"].mean(),
-        "pushed_max": grouped["pushed"].max(),
+        # Mean, and the range the month spans: the monthly figure alone hides
+        # whether a month sat near its mean or swung across the whole band.
+        "plant_mean": grouped["plant"].mean(),
+        "plant_min": grouped["plant"].min(),
+        "plant_max": grouped["plant"].max(),
         "carried_mean": grouped["carried"].mean(),
+        "carried_min": grouped["carried"].min(),
+        "carried_max": grouped["carried"].max(),
         "rating_mean": grouped["rating"].mean(),
         "weather_mean": grouped["weather"].mean(),
         "above_static_pct": 100.0 * grouped["above_static"].mean(),
         "above_rating_pct": 100.0 * grouped["above_rating"].mean(),
+        "hours_above_static": grouped["above_static"].sum() * C.DT_H,
+        "hours_above_rating": grouped["above_rating"].sum() * C.DT_H,
         "available_mwh": grouped["available"].sum() * C.DT_H,
         "delivered_mwh": grouped["delivered"].sum() * C.DT_H,
         "curtailed_mwh": grouped["curtailed"].sum() * C.DT_H,
@@ -309,15 +345,21 @@ def period_means(result: pd.DataFrame) -> pd.DataFrame:
 
 
 def duration_points(result: pd.DataFrame) -> pd.DataFrame:
-    """Each current and rating exceeded for a given share of time [A]."""
+    """Each current and rating exceeded for a given share of time [A].
+
+    `hours` is that share of the converged window, so a point can be read
+    either way round: this current for this long.
+    """
     ok = result[result["converged"]]
     q = [1.0 - p / 100.0 for p in DURATION_POINTS_PCT]
-    pushed = pushed_current(ok)
+    plant = plant_current(ok)
     weather = corridor_series(ok, "rating_{zone}_weather_a", "min")
+    pct = np.asarray(DURATION_POINTS_PCT, dtype=float)
     return pd.DataFrame({
         "pct": DURATION_POINTS_PCT,
-        "pushed_a": pushed.quantile(q).to_numpy() if pushed is not None else np.nan,
-        "carried_a": corridor_series(ok, "i_{zone}_a", "max").quantile(q).to_numpy(),
+        "hours": pct / 100.0 * len(ok) * C.DT_H,
+        "plant_a": plant.quantile(q).to_numpy() if plant is not None else np.nan,
+        "carried_a": carried_current(ok).quantile(q).to_numpy(),
         "rating_a": corridor_series(ok, "rating_{zone}_a", "min").quantile(q).to_numpy(),
         "weather_a": weather.quantile(q).to_numpy() if weather.notna().any() else np.nan,
     })
@@ -389,13 +431,18 @@ HEADLINE_ROWS = (
     ("curtailed_pct", "Curtailed share of available", "%", False),
     ("net_export_mwh", "Net export to grid at PCC", "MWh", True),
     ("losses_mwh", "Network losses", "MWh", True),
-    ("pushed_current_max_a", "Peak current pushed by all plants", "A", True),
+    ("plant_current_max_a", "Peak current from all plants", "A", True),
     ("rating_mean_a", "Mean operative rating", "A", True),
-    ("pushed_above_single_static_pct", "Pushed current above {single_a} A ({single} static)",
+    ("rating_uplift_pct", "Rating uplift on the static rating", "%", False),
+    ("plant_loading_max_pct", "Peak thermal loading, against the operative rating", "%", False),
+    ("plant_above_single_static_pct", "Time above {single_a} A ({single} static)",
      "% of time", False),
-    ("pushed_above_rating_pct", "Pushed current above the operative rating", "% of time", False),
-    ("pushed_above_twin_static_pct", "Pushed current above {twin_a} A ({twin} static)",
+    ("hours_plant_above_single_static", "Hours above {single_a} A ({single} static)", "h", True),
+    ("plant_above_rating_pct", "Time above the operative rating", "% of time", False),
+    ("hours_plant_above_rating", "Hours above the operative rating", "h", True),
+    ("plant_above_twin_static_pct", "Time above {twin_a} A ({twin} static)",
      "% of time", False),
+    ("hours_plant_above_twin_static", "Hours above {twin_a} A ({twin} static)", "h", True),
     ("technical_cost_keur", "Technical cost", "k€", True),
 )
 COST_ROWS = (
@@ -472,22 +519,30 @@ def _run_table(cfg, result: pd.DataFrame, reference) -> pd.DataFrame:
 
 
 def _stats_row(name: str, series: pd.Series) -> list:
-    """Mean, minimum, 95th percentile and maximum, and time above both references."""
+    """Mean, minimum, 95th percentile, maximum, the peak as a share, exceedances.
+
+    The share is of the single conductor's static rating, so one column says
+    how far past the as-built capacity the row reaches - 200 % for a current
+    twice what the conductor may carry, and for a rating that allows twice
+    as much. Each exceedance is given as a share of the window and as hours.
+    """
     s = series.dropna()
     if s.empty:
-        return [name] + [None] * 6
+        return [name] + [None] * 9
     return [name, _num(s.mean(), "A"), _num(s.min(), "A"), _num(s.quantile(0.95), "A"),
-            _num(s.max(), "A"), _num(_share(s > SINGLE_STATIC_A), "%"),
-            _num(_share(s > TWIN_STATIC_A), "%")]
+            _num(s.max(), "A"), _num(100.0 * s.max() / SINGLE_STATIC_A, "%"),
+            _num(_share(s > SINGLE_STATIC_A), "%"),
+            _num(float((s > SINGLE_STATIC_A).sum()) * C.DT_H, "h"),
+            _num(_share(s > TWIN_STATIC_A), "%"),
+            _num(float((s > TWIN_STATIC_A).sum()) * C.DT_H, "h")]
 
 
 def _current_table(cfg, ok: pd.DataFrame) -> pd.DataFrame:
     rows = []
-    pushed = pushed_current(ok)
-    if pushed is not None:
-        rows.append(_stats_row("Pushed by all plants (before curtailment)", pushed))
-    rows.append(_stats_row("Carried (after curtailment)",
-                           corridor_series(ok, "i_{zone}_a", "max")))
+    plant = plant_current(ok)
+    if plant is not None:
+        rows.append(_stats_row("Current from all plants (before curtailment)", plant))
+    rows.append(_stats_row("Current after curtailment", carried_current(ok)))
     if cfg.dlr_mode > 0:
         rows.append(_stats_row("Operative DLR rating",
                                corridor_series(ok, "rating_{zone}_a", "min")))
@@ -495,11 +550,17 @@ def _current_table(cfg, ok: pd.DataFrame) -> pd.DataFrame:
                                corridor_series(ok, "rating_{zone}_weather_a", "min")))
     for name, amps in ((f"Static rating, {SINGLE['label']}", SINGLE_STATIC_A),
                        (f"Reinforcement, {TWIN['label']} static", TWIN_STATIC_A)):
-        rows.append([name] + [_num(amps, "A")] * 4 + [None, None])
+        rows.append([name] + [_num(amps, "A")] * 4
+                    + [_num(100.0 * amps / SINGLE_STATIC_A, "%")] + [None] * 4)
     columns = ["Current", "Mean (A)", "Min (A)", "P95 (A)", "Max (A)",
-               f"Time above {SINGLE_STATIC_A:.0f} A (%)", f"Time above {TWIN_STATIC_A:.0f} A (%)"]
-    return _table(rows, columns, "highest current on any corridor segment; pushed = every "
-                                 "plant at full available output, carried = after curtailment")
+               f"Peak (% of {SINGLE_STATIC_A:.0f} A)",
+               f"Time above {SINGLE_STATIC_A:.0f} A (%)",
+               f"Time above {SINGLE_STATIC_A:.0f} A (h)",
+               f"Time above {TWIN_STATIC_A:.0f} A (%)",
+               f"Time above {TWIN_STATIC_A:.0f} A (h)"]
+    return _table(rows, columns,
+                  "highest current on any corridor segment; the current from all plants is "
+                  "every connected plant at full available output, before curtailment")
 
 
 def _segment_table(ok: pd.DataFrame) -> pd.DataFrame:
@@ -634,30 +695,34 @@ def _binding_table(cfg, m: dict) -> pd.DataFrame:
 
 def _period_table(result: pd.DataFrame) -> pd.DataFrame:
     means = period_means(result)
-    rows = [[name, _num(row.hours, "h"), _num(row.pushed_mean, "A"), _num(row.pushed_max, "A"),
-             _num(row.carried_mean, "A"), _num(row.rating_mean, "A"), _num(row.weather_mean, "A"),
-             _num(row.above_static_pct, "%"), _num(row.above_rating_pct, "%"),
-             _num(row.available_mwh, "MWh"), _num(row.delivered_mwh, "MWh"),
-             _num(row.curtailed_mwh, "MWh"), _num(row.net_export_mwh, "MWh"),
-             _num(row.losses_mwh, "MWh")]
+    rows = [[name, _num(row.hours, "h"), _num(row.plant_mean, "A"), _num(row.plant_min, "A"),
+             _num(row.plant_max, "A"), _num(row.carried_mean, "A"), _num(row.rating_mean, "A"),
+             _num(row.weather_mean, "A"), _num(row.above_static_pct, "%"),
+             _num(row.hours_above_static, "h"), _num(row.above_rating_pct, "%"),
+             _num(row.hours_above_rating, "h"), _num(row.available_mwh, "MWh"),
+             _num(row.delivered_mwh, "MWh"), _num(row.curtailed_mwh, "MWh"),
+             _num(row.net_export_mwh, "MWh"), _num(row.losses_mwh, "MWh")]
             for name, row in means.iterrows()]
-    columns = ["Period", "Hours", "Pushed mean (A)", "Pushed max (A)", "Carried mean (A)",
-               "Operative mean (A)", "Heat balance mean (A)",
-               f"Pushed above {SINGLE_STATIC_A:.0f} A (%)", "Pushed above rating (%)",
-               "Available (MWh)", "Delivered (MWh)", "Curtailed (MWh)", "Net export (MWh)",
-               "Losses (MWh)"]
-    return _table(rows, columns, "currents are means, energies totals; one row per calendar "
-                                 "month, or one for a window under four weeks")
+    columns = ["Period", "Hours", "All plants mean (A)", "All plants min (A)",
+               "All plants max (A)", "After curtailment mean (A)", "Operative mean (A)",
+               "Heat balance mean (A)", f"Above {SINGLE_STATIC_A:.0f} A (%)",
+               f"Above {SINGLE_STATIC_A:.0f} A (h)", "Above the rating (%)",
+               "Above the rating (h)", "Available (MWh)", "Delivered (MWh)",
+               "Curtailed (MWh)", "Net export (MWh)", "Losses (MWh)"]
+    return _table(rows, columns, "currents are from all plants unless named otherwise; "
+                                 "energies are totals; one row per calendar month, or one "
+                                 "for a window under four weeks")
 
 
 def _duration_table(result: pd.DataFrame) -> pd.DataFrame:
     points = duration_points(result)
-    rows = [[int(row.pct), _num(row.pushed_a, "A"), _num(row.carried_a, "A"),
-             _num(row.rating_a, "A"), _num(row.weather_a, "A")]
+    rows = [[int(row.pct), _num(row.hours, "h"), _num(row.plant_a, "A"),
+             _num(row.carried_a, "A"), _num(row.rating_a, "A"), _num(row.weather_a, "A")]
             for row in points.itertuples(index=False)]
-    return _table(rows, ["Time exceeded (%)", "Pushed (A)", "Carried (A)",
-                         "Operative rating (A)", "Heat balance (A)"],
-                  "the current each line reaches or exceeds for the given share of time")
+    return _table(rows, ["Time exceeded (%)", "Time exceeded (h)", "All plants (A)",
+                         "After curtailment (A)", "Operative rating (A)", "Heat balance (A)"],
+                  "the current each line reaches or exceeds for the given share of the "
+                  "window, as a percentage and in hours")
 
 
 # Run counters worth a line when they are not zero.

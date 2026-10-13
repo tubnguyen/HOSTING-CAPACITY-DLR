@@ -36,8 +36,10 @@ TABLE_COLUMNS = [
     "scenario", "conductor", "dlr_mode", "n_der", "fleet_mw", "storage",
     "available_mwh", "delivered_mwh", "curtailed_mwh", "curtailed_pct", "net_export_mwh",
     "rating_mean_a", "rating_uplift_pct", "rating_weather_mean_a",
-    "rating_uplift_uncapped_pct", "headroom_limited_pct", "pushed_current_max_a",
-    "pushed_above_single_static_pct", "pushed_above_rating_pct", "pushed_above_twin_static_pct",
+    "rating_uplift_uncapped_pct", "headroom_limited_pct", "plant_current_max_a",
+    "plant_loading_max_pct", "plant_above_single_static_pct", "hours_plant_above_single_static",
+    "plant_above_rating_pct", "hours_plant_above_rating", "plant_above_twin_static_pct",
+    "hours_plant_above_twin_static",
     "corridor_loading_p95_pct", "hours_corridor_over_limit", "pcc_peak_mw",
     "hours_over_export_cap", "hours_voltage_high", "hours_voltage_low", "losses_mwh",
     "reactive_outside_window_mvarh", "technical_cost_keur",
@@ -146,12 +148,13 @@ def config_for(row) -> Config:
 
 
 def build_outputs(out_dir: Path, figures_dir: Path, redraw: bool = True,
-                  make_plots: bool = True, compare: bool = False) -> pd.DataFrame:
+                  compare: bool = False) -> pd.DataFrame:
     """Write the comparison table and every figure, from the saved time series.
 
     With `compare`, each DLR run with a static partner in the matrix gets its
-    summary rewritten against that partner, and its cost figure redrawn when
-    figures are on. `redraw` redraws every run's figures as well.
+    summary rewritten against that partner. `redraw` redraws every run's
+    figures as well; the figures describe one run each, so pairing changes
+    the summary tables and not them.
     """
     table = collect(out_dir)
     figures_dir.mkdir(parents=True, exist_ok=True)
@@ -187,12 +190,8 @@ def build_outputs(out_dir: Path, figures_dir: Path, redraw: bool = True,
             ref_cfg = dataclasses.replace(static_config(cfg), label=partner)
             ref = Reference(ref_cfg, static_result, "reused")
             report.write_summary(cfg, result, out_dir / scenario, ref)
-        figures = out_dir / scenario / "figures"
         if redraw:
-            plots.run_figures(cfg, result, figures, ref)
-        elif ref is not None and make_plots:
-            figures.mkdir(parents=True, exist_ok=True)
-            plots.technical_cost(cfg, result, figures / f"{cfg.stem}_cost.png", ref)
+            plots.run_figures(cfg, result, out_dir / scenario / "figures")
 
     # Collected again: the pairing above records each run's static partner.
     table = collect(out_dir)
@@ -281,8 +280,7 @@ def main(argv=None) -> int:
 
     # Each worker has already drawn its own figures, or skipped them under
     # --no-plots, so only the comparison figures are left to build here.
-    table = build_outputs(args.out, args.figures, redraw=False, make_plots=args.plots,
-                          compare=args.compare)
+    table = build_outputs(args.out, args.figures, redraw=False, compare=args.compare)
     print(_headline(table))
     print(f"\n  table   -> {args.out / 'matrix_summary.csv'}")
     print(f"  figures -> {args.figures}")
