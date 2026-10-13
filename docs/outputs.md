@@ -73,10 +73,11 @@ TAP_W to SUB_C, and `loading_T_SUB_A1_pct` is the loading of the first
 
 ### Unit, the last token
 
-`_a` amperes · `_ka` kiloamperes · `_mw` megawatts · `_mvar` megavolt-amperes
-reactive · `_mva` megavolt-amperes · `_mwh` megawatt-hours · `_pu` per unit ·
-`_pct` per cent · `_c` degrees Celsius · `_ms` metres per second · `_deg`
-degrees · `_wm2` watts per square metre · `_wm` watts per metre.
+`_a` amperes · `_mw` megawatts · `_mvar` megavolt-amperes reactive · `_mva`
+megavolt-amperes · `_mwh` megawatt-hours · `_pu` per unit · `_pct` per cent ·
+`_c` degrees Celsius · `_ms` metres per second · `_deg` degrees · `_wm2` watts
+per square metre · `_wm` watts per metre. A column with no unit token is a
+flag, a count or a name (`converged`, `curtail_trials`, `rating_Z1_binding`).
 
 ### Columns that do not follow the pattern
 
