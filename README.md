@@ -114,7 +114,7 @@ corridor-sim --preset dlr2_der4_bess --days 3            # full-weather DLR, all
 corridor-sim --preset dlr2_der4_bess --days 3 --compare  # the same, beside the static rating
 python scripts/run_matrix.py --days 30 --jobs 8    # all 21 presets in parallel
 ```
-If ```bash corridor-sim``` does not work, try:
+If ```corridor-sim``` does not work, try:
 ```bash
 python -m corridor_sim.cli --preset dlr2_der4_bess --days 3
 ```
