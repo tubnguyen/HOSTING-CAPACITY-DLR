@@ -1,6 +1,6 @@
-# Output files and how to read a column name
+# Output files and Interpretation
 
-Every run writes to `runs/<label>/`:
+Results are in `runs/<label>/`:
 
 | File | Contents |
 |---|---|
@@ -12,19 +12,15 @@ Every run writes to `runs/<label>/`:
 
 ## The two currents
 
-The corridor current is reported twice, and the two are named for what they
-are rather than for the curtailment between them.
-
-| Name | What it is |
+| Name | Meaning |
 |---|---|
-| **Current from all plants** | the corridor current with every connected plant at its full available output, read before curtailment acts. The demand the corridor is asked to carry. |
-| **Current after curtailment** | the same current once curtailment has brought it onto the operative rating. What the corridor carries. |
+| **Current from all plants** | the corridor current with every connected plant at its full available output, before curtailment. |
+| **Current after curtailment** | Current the corridor carries |
 
-The gap between them is the curtailment, so the exceedance is enough on its
-own: how far and how long the current from all plants stays above a rating is
-how much curtailment that rating costs. The figures therefore plot the current
-from all plants against each rating, and give every exceedance as a share of
-the window and in hours.
+The gap between them is the curtailment, how far and how long the current from
+all plants stays above a rating is how much curtailment that rating costs.
+The figures therefore plot the current from all plants against each rating, 
+and give every exceedance as a share of the window and in hours.
 
 **Thermal loading** is the same quantity as a percentage: current ÷ rating ×
 100. The current figures carry it as a second scale on the right, against the
@@ -33,13 +29,11 @@ as the conductor is rated to carry.
 
 ## Reading a column name in the time series
 
-A column name is built from `quantity_element_unit`. Both halves use short
-codes, and the codes are the same everywhere - in the time series, the summary
-tables and the network diagram.
+A column name is comprised of `quantity_element_unit`.
 
-### Quantity, the first token
+### Quantity
 
-| Token | Quantity | Example |
+| Symbol | Quantity | Example |
 |---|---|---|
 | `v` | bus voltage | `v_PCC_pu` |
 | `i` | current | `i_CORR_W_C_a` |
@@ -53,9 +47,9 @@ tables and the network diagram.
 | `storage` | battery state and dispatch | `storage_soc_pct` |
 | `pcc` | the exchange at the grid interface | `pcc_p_mw` |
 
-### Element, the middle token
+### Element
 
-| Token | Element | Members |
+| Symbol | Element | Members |
 |---|---|---|
 | **`CORR`** | **corridor** - a 110 kV segment of the export corridor itself, named after the two points it runs between | `CORR_A_PV` (SUB_A → TAP_PV), `CORR_PV_W`, `CORR_W_C`, `CORR_C_B`, `CORR_B_PCC` |
 | **`T`** | **transformer** - a two-winding transformer, named after the substation or plant it belongs to | `T_SUB_A1`, `T_SUB_A2`, `T_SUB_B` (110/20 kV distribution), `T_WF1_1`, `T_WF1_2`, `T_WF2_1`, `T_WF2_2`, `T_WF3_1`, `T_WF3_2` (wind step-up), `T_PV`, `T_BESS` |
@@ -71,7 +65,7 @@ So `i_CORR_W_C_a` is the current in amperes on the corridor segment from
 TAP_W to SUB_C, and `loading_T_SUB_A1_pct` is the loading of the first
 110/20 kV transformer at SUB_A as a percentage of its own rating.
 
-### Unit, the last token
+### Unit
 
 `_a` amperes · `_mw` megawatts · `_mvar` megavolt-amperes reactive · `_mva`
 megavolt-amperes · `_mwh` megawatt-hours · `_pu` per unit · `_pct` per cent ·
@@ -79,7 +73,7 @@ megavolt-amperes · `_mwh` megawatt-hours · `_pu` per unit · `_pct` per cent �
 per square metre · `_wm` watts per metre. A column with no unit token is a
 flag, a count or a name (`converged`, `curtail_trials`, `rating_Z1_binding`).
 
-### Columns that do not follow the pattern
+### Other columns
 
 | Column | Meaning |
 |---|---|
@@ -111,7 +105,3 @@ a DLR column and the change in both the quantity's own unit and in per cent.
 | `<label>_voltage.png` | voltage at every corridor bus |
 | `<label>_rating_drivers.png` | heat-balance ampacity against wind and temperature (full-weather runs only) |
 | `<label>_storage.png` | interface export and state of charge (runs with a battery) |
-
-The technical cost has no figure. It is three numbers on four quantities, so
-it reads better as the `TECHNICAL COST` table in the summary and the
-`cost_*_keur` entries in the metrics than as a bar chart.
