@@ -14,20 +14,15 @@ pip install -e ".[dev]"       # editable mode and install dependencies
 ## One scenario: `corridor-sim`
 
 ```bash
-corridor-sim [options]        # same as: python -m corridor_sim.cli [options]
+corridor-sim [options]
+# OR
+python -m corridor_sim.cli [options]
 ```
 
 Default run is 30 days from 2024-01-01: single
 conductor, ambient-adjusted rating (mode 1), all four plants, droop control, no
 battery, both zones at a 45° bearing. A `--preset` sets a named scenario, and any
 flag given with it overrides the preset.
-
-A run reports itself alone. With `--compare`, a DLR run (mode 1 or 2) is also set
-beside the same study at the static rating: a matching static run in the output
-folder is reused, and otherwise one is simulated in a second process at the same
-time and saved as its own run. Matching means the same window, plants, storage,
-network settings, input data and model code. The static case is the slower of the
-two, so the first compared run of a setup takes about as long as that static run.
 
 ### Scenario
 
@@ -56,8 +51,7 @@ two, so the first compared run of a setup takes about as long as that static run
 
 The bearing and the wind factor only change the result in mode 2. The wind factor
 stands for the least-cooled span: sheltered by trees and terrain, with the wind
-along rather than across it. At 1.0 the shipped site would average about twice the
-static rating and pass three times it in winter storms.
+parallel.
 
 ### Time window and files
 
@@ -106,34 +100,27 @@ Plus `baseline`: static rating, no generation. Every preset uses droop control.
 # a quick look: full-weather DLR, all plants, battery, three days
 corridor-sim --preset dlr2_der4_bess --days 3
 
-# which rating scheme is worth buying
+# Different DLR mode
 corridor-sim --dlr 0 --der WF_1,WF_2,WF_3 --days 365
 corridor-sim --dlr 1 --der WF_1,WF_2,WF_3 --days 365
 corridor-sim --dlr 2 --der WF_1,WF_2,WF_3 --days 365
 
-# how much the line's direction matters
+# Affect of angle
 corridor-sim --dlr 2 --azimuth 0 --days 365
 corridor-sim --dlr 2 --azimuth-z1 0 --azimuth-z2 90 --days 365
 
-# is it the permit or the switchgear that limits the uplift?
-corridor-sim --dlr 2 --no-rating-cap --days 365
-corridor-sim --dlr 2 --no-equipment-limit --days 365
-
-# what reconductoring would buy
+# Reinforcement mode
 corridor-sim --dlr 0 --conductor twin --der WF_1,WF_2,WF_3 --days 365
 
 # your own data, a named output (its static reference is my_case_static)
 corridor-sim --data-dir /path/to/my_data --dlr 2 --start 2024-01-01 --days 365 --label my_case
 
-# DLR beside the static rating, at your own prices
+# Set your own electricity price
 corridor-sim --preset dlr2_der4 --days 3 --compare --energy-price 80
 
-# how much the wind assumption matters
+# Affect of wind speed
 corridor-sim --dlr 2 --wind-factor 0.6 --days 30
 ```
-
-Runs are slow: roughly 20 s per simulated day when nothing binds and 2–3 minutes
-per day when the corridor curtails heavily, on one core.
 
 ## The whole matrix: `scripts/run_matrix.py`
 
@@ -149,7 +136,7 @@ python scripts/run_matrix.py --only static_der4 dlr2_der4 --days 7
 python scripts/run_matrix.py --collect-only      # rebuild table and figures from saved runs
 ```
 
-| Option | Default | What it does |
+| Option | Default | Purposes |
 |---|---|---|
 | `--days N` | `30` | window length for every scenario |
 | `--start DATE` | `2024-01-01` | first day |
