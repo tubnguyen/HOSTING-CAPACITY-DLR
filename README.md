@@ -77,26 +77,17 @@ Each run writes to `runs/<label>/`:
 
 **Every column name, table and figure explained: [docs/outputs.md](docs/outputs.md).**
 
-The corridor current is reported two ways. The **current from all plants** is what
-every connected plant would produce at full available output, read before
-curtailment; the **current after curtailment** is what the corridor then carries.
-Both are measured against the ratings the corridor is held to: 780 A static on the
-as-built conductor, the DLR heat balance and the operative rating above it, and the
-1560 A twin-bundle reinforcement.
-
-The figures are built around the first of those and around thermal loading. They
-give how far above each rating the generation reaches and for how long, as a share
-of the window and in hours, with a second scale reading amperes as a percentage of
-the 780 A static rating. The excess over the operative rating is exactly what
-curtailment removes, so the exceedance sizes the curtailment without a curve of its
-own.
+The **current from all plants** is current all DERs would produce at full available output,
+before curtailment.
+The **current after curtailment** is current conductors able to carry.
+Compared with: 780 A static rating single conductor, DLR uplift conductor,
+and the 1560 A bundle conductor reinforcement.
 
 The technical cost - curtailed energy, network losses and reactive energy outside
 the PCC window, in MWh and MVArh and, at indicative prices (`--energy-price`,
-`--reactive-price`), in k€ - is in the summary tables and the metrics. It has no
-figure.
+`--reactive-price`), in k€ - is in the summary tables and the metrics. 
 
-A run reports itself alone. `--compare` also runs the same case at the static rating
+A run reports itself. `--compare` also runs the same case at the static rating
 and sets the two side by side in the headline and cost tables; the static case is
 slow, so it is reused if a matching run is already in the output folder. The figures
 describe one run each.
