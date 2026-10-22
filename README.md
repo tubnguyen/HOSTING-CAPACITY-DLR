@@ -45,6 +45,22 @@ The weather, demand, wind farms and solar farms, and network are meant to be rep
 
 Parameters: [docs/network.md](docs/network.md).
 
+## Quick start
+
+```bash
+git clone https://github.com/tubnguyen/HOSTING-CAPACITY-DLR
+cd HOSTING-CAPACITY-DLR
+pip install -e ".[dev]"
+
+corridor-sim --preset dlr2_der4_bess --days 3            # full-weather DLR, all plants, battery
+corridor-sim --preset dlr2_der4_bess --days 3 --compare  # the same, beside the static rating
+python scripts/run_matrix.py --days 30 --jobs 8    # all 21 presets in parallel
+```
+If ```corridor-sim``` does not work, try:
+```bash
+python -m corridor_sim.cli --preset dlr2_der4_bess --days 3
+```
+
 ## Input
 
 Four CSV files in one folder (`--data-dir`). All four are required.
@@ -94,27 +110,12 @@ describe one run each.
 
 The matrix runner adds `matrix_summary.csv` and comparison figures.
 
-## Quick start
-
-```bash
-git clone https://github.com/tubnguyen/HOSTING-CAPACITY-DLR
-cd HOSTING-CAPACITY-DLR
-pip install -e ".[dev]"
-
-corridor-sim --preset dlr2_der4_bess --days 3            # full-weather DLR, all plants, battery
-corridor-sim --preset dlr2_der4_bess --days 3 --compare  # the same, beside the static rating
-python scripts/run_matrix.py --days 30 --jobs 8    # all 21 presets in parallel
-```
-If ```corridor-sim``` does not work, try:
-```bash
-python -m corridor_sim.cli --preset dlr2_der4_bess --days 3
-```
 
 **Every command, option, preset and Python setting: [docs/commands.md](docs/commands.md).**
 
 ## Documentation
 
-| File | What is in it |
+| File | Content |
 |---|---|
 | [docs/commands.md](docs/commands.md) | all commands and options, presets, Python API |
 | [docs/outputs.md](docs/outputs.md) | output files, what every column name means, tables and figures |
