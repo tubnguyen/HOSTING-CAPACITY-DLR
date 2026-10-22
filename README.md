@@ -126,7 +126,7 @@ The matrix runner adds `matrix_summary.csv` and comparison figures.
 
 ## Limitations
 
-Planning study only: quasi-static, intact network (no N-1), no protection or
+Planning study only: intact network (no N-1), no protection or
 stability, no sag calculation, one weather point per corridor. The shipped site is
 cold and windy, so it favours DLR more than a calmer site would.
 
