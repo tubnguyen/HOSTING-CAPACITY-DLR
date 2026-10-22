@@ -1,8 +1,8 @@
-# Example network in brief
+# Example network description
 
 A generic 110 kV corridor exporting 330 MW of wind and solar to the grid. Values
-are representative, from public standards and typical datasheets; they describe
-no real line. All of them live in [`constants.py`](../src/corridor_sim/constants.py).
+are representative, from public standards and typical datasheets;
+Available in [`constants.py`](../src/corridor_sim/constants.py).
 
 ```mermaid
 graph LR
