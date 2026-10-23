@@ -24,13 +24,51 @@ conductor, ambient-adjusted rating (mode 1), all four plants, droop control, no
 battery, both zones at a 45° bearing. A `--preset` sets a named scenario, and any
 flag given with it overrides the preset.
 
+### Answering questions instead: interactive mode
+
+```bash
+corridor-sim                                  # no options, in a terminal
+corridor-sim -i                               # the same, anywhere
+corridor-sim -i --preset dlr2_der4_bess       # the preset's settings are the defaults offered
+```
+
+With no options in a terminal, or with `-i` / `--interactive`, the scenario is asked
+for one question at a time:
+
+| Step | Question | Options |
+|---|---|---|
+| 1 | Plants already on the corridor | `all`, `none`, or names such as `WF_1,PV_1` |
+| 2 | Added plants | how many (0 to 10); for each: `wind` or `solar`, rating in MW, connection point |
+| 3 | Large loads | how many (0 to 10); for each: demand in MW, connection point |
+| 4 | Battery | `yes` or `no` |
+| 5 | Corridor conductor | `single` or `twin` |
+| 6 | Line rating | `0` static, `1` ambient-adjusted, `2` full weather (or `static`, `ambient`, `full`) |
+| 7 | Time window | first day and number of days, inside the input data |
+| 8 | Outputs | compare with the static rating (DLR only), figures, name of the run |
+
+Each question shows its default in brackets; Enter takes it. A connection point can
+be typed by name or by its number in the list. An answer that matches no option is
+not guessed at: the question is asked again, with what it accepts. At the end the
+run is summarised and printed as the equivalent command, for example
+
+```text
+corridor-sim --dlr 2 --add-der wind:50@SUB_C --add-load 80@MID_A_C --storage --days 7
+```
+
+and nothing runs until you confirm. Ctrl+C stops at any point. Without a terminal,
+as in a script or a pipe, `corridor-sim` with no options runs the default scenario
+as it always has.
+
 ### Scenario
 
 | Option | Values | Default | What it does |
 |---|---|---|---|
 | `--preset NAME` | see [Presets](#presets) | none | start from a named scenario |
 | `--conductor` | `single`, `twin` | `single` | as-built conductor or twin-bundle reconductoring |
-| `--der LIST` | comma list of `WF_1`, `WF_2`, `WF_3`, `PV_1` | all four | plants connected, e.g. `--der WF_1,WF_2` |
+| `--der LIST` | comma list of `WF_1`, `WF_2`, `WF_3`, `PV_1`, or `all`, `none` | all four | built-in plants connected, e.g. `--der WF_1,WF_2` |
+| `--add-der KIND:MW@POINT` | `wind` or `solar`, MW, connection point | none | add a plant, e.g. `--add-der wind:50@SUB_C`; repeat for more |
+| `--add-load MW@POINT[:PF]` | MW, connection point, optional lagging power factor | none | add a constant large load, e.g. `--add-load 80@MID_A_C`; repeat for more |
+| `-i`, `--interactive` | flag | off | ask for the scenario question by question (above) |
 | `--control` | `droop`, `cosphi` | `droop` | plant reactive power: Q(V) droop or fixed cos φ 0.95 |
 | `--storage` | flag | off | connect the 30 MW / 60 MWh battery |
 | `--no-curtailment` | flag | on | record violations but never curtail |
@@ -49,6 +87,12 @@ flag given with it overrides the preset.
 | `--azimuth-z2 DEG` | same set | `45` | bearing of zone Z2 only; wins over `--azimuth` |
 | `--wind-factor X` | 0 < X ≤ 1 | `0.4` | share of the conductor-height wind counted as cooling |
 
+`POINT` is one of `SUB_A` (0 km), `MID_A_C` (15 km, midway to SUB_C), `SUB_C`
+(30 km), `MID_C_PCC` (35.5 km, midway to the PCC) or `PCC` (41 km), in any case.
+Added plants are named `WF_4`, `WF_5`, … and `PV_2`, `PV_3`, … in the order given,
+added loads `LOAD_1`, `LOAD_2`, …. How they are modelled:
+[network.md](network.md#added-plants-and-loads).
+
 The bearing and the wind factor only change the result in mode 2. The wind factor
 stands for the least-cooled span: sheltered by trees and terrain, with the wind
 parallel.
@@ -62,7 +106,7 @@ parallel.
 | `--end DATE` | `YYYY-MM-DD` | — | explicit end; overrides `--days` |
 | `--data-dir PATH` | folder | `data/` | folder holding the four input CSVs |
 | `--out PATH` | folder | `runs/` | results go to `<out>/<label>/` |
-| `--label NAME` | text | auto | output name; auto is `<conductor>_der<n>_<control>_dlr<mode>_bess<0/1>` |
+| `--label NAME` | text | auto | output name; auto is `<conductor>_der<n>_<control>_dlr<mode>_bess<0/1>`, where `n` counts every plant connected, then one tag per added plant and load, e.g. `_wf50-SUB_C_ld80-PCC` |
 | `--no-plots` | flag | plots on | skip the figures |
 | `--compare` | flag | off | also run the static case and compare (slow the first time) |
 
@@ -74,7 +118,7 @@ What each output file holds, and what every column name means:
 | Option | Values | Default | What it does |
 |---|---|---|---|
 | `--energy-price EUR` | number ≥ 0 | `50` | €/MWh for curtailed energy and network losses |
-| `--reactive-price EUR` | number ≥ 0 | `5` | €/MVArh for reactive energy outside the ±33 MVAr PCC window |
+| `--reactive-price EUR` | number ≥ 0 | `5` | €/MVArh for reactive energy outside the PCC window (±33 MVAr, wider with added plants) |
 
 Both are round placeholders for the cost columns of the summary; they change no
 simulated result, and there is no cost figure to redraw.
@@ -120,6 +164,16 @@ corridor-sim --preset dlr2_der4 --days 3 --compare --energy-price 80
 
 # Affect of wind speed
 corridor-sim --dlr 2 --wind-factor 0.6 --days 30
+
+# Where a new 50 MW wind farm connects: head of the corridor, or the grid interface
+corridor-sim --dlr 2 --add-der wind:50@SUB_A --days 30
+corridor-sim --dlr 2 --add-der wind:50@PCC --days 30
+
+# Two added plants and a large load midway along zone Z1
+corridor-sim --dlr 2 --add-der wind:50@SUB_C --add-der solar:30@MID_C_PCC --add-load 80@MID_A_C --days 30
+
+# Only the added plants: none of the built-in four
+corridor-sim --der none --add-der wind:120@MID_A_C --days 30
 ```
 
 ## The whole matrix: `scripts/run_matrix.py`
@@ -170,7 +224,9 @@ from corridor_sim.config import build_config
 
 if __name__ == "__main__":
     cfg = build_config("dlr2_der4", days=365, data_dir="/path/to/my_data",
-                       azimuth_z1_deg=45.0, export_cap_mw=200.0, label="my_case")
+                       azimuth_z1_deg=45.0, export_cap_mw=200.0, label="my_case",
+                       added_der=["wind:50@SUB_C", {"kind": "solar", "mw": 30, "at": "PCC"}],
+                       added_loads=[{"mw": 80, "at": "MID_A_C", "pf": 0.95}])
     metrics, paths = run_scenario(cfg, make_plots=True, progress=True, compare=True)
 ```
 
@@ -179,8 +235,12 @@ a second process, so keep the call under `if __name__ == "__main__":` in a scrip
 
 `build_config(preset, **fields)` applies the field defaults, then the preset, then
 your overrides, and validates the result. Every CLI flag maps to a field
-(`--dlr` → `dlr_mode`, `--der` → `der_enabled`, and so on). These fields are only
-reachable from Python:
+(`--dlr` → `dlr_mode`, `--der` → `der_enabled`, `--add-der` → `added_der`,
+`--add-load` → `added_loads`, and so on). An added plant or load is given as the
+option's text, as a dict, or as an `AddedPlant` / `AddedLoad` from `corridor_sim.config`;
+a dict may name it (`"name": "WF_7"`), otherwise it is numbered on. `to_argv(cfg)`
+gives the options that rebuild a configuration. These fields are only reachable
+from Python:
 
 | Field | Default | Options / meaning |
 |---|---|---|
@@ -212,6 +272,6 @@ transformers, control deadbands) are constants in
 ## Tests and lint
 
 ```bash
-python -m pytest -q           # about four minutes
+python -m pytest -q           # about six minutes
 ruff check src tests scripts data
 ```

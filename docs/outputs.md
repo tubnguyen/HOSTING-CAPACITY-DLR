@@ -51,13 +51,15 @@ A column name is comprised of `quantity_element_unit`.
 
 | Symbol | Element | Members |
 |---|---|---|
-| **`CORR`** | **corridor** - a 110 kV segment of the export corridor itself, named after the two points it runs between | `CORR_A_PV` (SUB_A → TAP_PV), `CORR_PV_W`, `CORR_W_C`, `CORR_C_B`, `CORR_B_PCC` |
-| **`T`** | **transformer** - a two-winding transformer, named after the substation or plant it belongs to | `T_SUB_A1`, `T_SUB_A2`, `T_SUB_B` (110/20 kV distribution), `T_WF1_1`, `T_WF1_2`, `T_WF2_1`, `T_WF2_2`, `T_WF3_1`, `T_WF3_2` (wind step-up), `T_PV`, `T_BESS` |
+| **`CORR`** | **corridor** - a 110 kV segment of the export corridor itself, named after the two points it runs between | `CORR_A_PV` (SUB_A → TAP_PV), `CORR_PV_W`, `CORR_W_C`, `CORR_C_B`, `CORR_B_PCC`; with a midpoint connection, `CORR_PV_W_1` and `CORR_PV_W_2` (either side of MID_A_C) or `CORR_C_B_1` and `CORR_C_B_2` (either side of MID_C_PCC) in place of the whole segment |
+| **`T`** | **transformer** - a two-winding transformer, named after the substation or plant it belongs to | `T_SUB_A1`, `T_SUB_A2`, `T_SUB_B` (110/20 kV distribution), `T_WF1_1`, `T_WF1_2`, `T_WF2_1`, `T_WF2_2`, `T_WF3_1`, `T_WF3_2` (wind step-up), `T_PV`, `T_BESS`, and `T_WF_4`, `T_PV_2`, … for added plants |
 | `SUB` | substation busbar | `SUB_A`, `SUB_B`, `SUB_C`, `SUB_E`, and `SUB_A_MV`, `SUB_B_MV` on the 20 kV side |
 | `TAP` | tap point on the corridor, where a plant joins it | `TAP_PV`, `TAP_W`, `TAP_B` |
+| `MID` | midpoint connection, built only when something connects there | `MID_A_C` (15 km), `MID_C_PCC` (35.5 km) |
 | `PCC` | point of common coupling, the grid interface | `PCC` |
 | `LAT`, `CAB`, `SPUR`, `LINK` | lateral overhead line, collector cable, spur, interconnector | `LAT_WF1_TAP`, `CAB_PV` |
-| `WF`, `PV`, `BESS` | wind farm, solar plant, battery | `WF_1`, `WF_2`, `WF_3`, `PV_1` |
+| `WF`, `PV`, `BESS` | wind farm, solar plant, battery | `WF_1`, `WF_2`, `WF_3`, `PV_1`, and added plants `WF_4`, `PV_2`, … |
+| `LOAD` | added large load | `LOAD_1`, `LOAD_2`, … (`p_LOAD_1_mw`, `q_LOAD_1_mvar`) |
 | `RX` | shunt reactor | `RX_SUB_A`, `RX_SUB_B` |
 | **`Z1`, `Z2`** | **rating zone** - the corridor is rated in two zones, each with its own bearing and weather. `Z1` is SUB_A to SUB_C (30 km), `Z2` SUB_C to the PCC (11 km). A zone column is the worst of its segments: the highest current, the lowest rating | `i_Z1_a`, `rating_Z2_a` |
 
@@ -83,15 +85,21 @@ flag, a count or a name (`converged`, `curtail_trials`, `rating_Z1_binding`).
 | `qc_Z1_wm`, `qr_Z1_wm`, `qs_Z1_wm` | the IEEE 738 heat terms per metre: convection, radiation, solar gain |
 | `phi_Z1_deg`, `wind_Z1_ms` | wind angle to the conductor, and the cooling wind speed at it |
 | `converged`, `reg_*`, `curtail_*`, `viol_L1`…`viol_L4` | solver, control loop, curtailment and violation diagnostics |
+| `viol_L3_import` | a corridor segment overloaded by power drawn back toward the head for a large load; counted in `viol_L3` too, but never curtailed for (`curtail_exit` `load_driven`, `residual_class` `drawn_by_load`) |
 
 ## Summary tables
 
 In the order they appear in `<label>_summary.csv`: `RUN`, `HEADLINE`,
 `CORRIDOR CURRENT`, `CORRIDOR POWER FLOW`, `GENERATION BY PLANT`,
-`GRID INTERFACE (PCC)`, `VOLTAGE`, `TRANSFORMER LOADING`, `TECHNICAL COST`,
-`RATING SET BY`, `MONTHLY MEANS` (or `PERIOD MEANS` under four weeks),
-`CURRENT DURATION`, `CHECKS`, `STORAGE`. Each carries a one-line note on the
-title row. With `--compare` the headline and cost tables gain a static column,
+`GRID INTERFACE (PCC)`, `ADDED LOADS` (with added loads), `VOLTAGE`,
+`TRANSFORMER LOADING`, `TECHNICAL COST`, `RATING SET BY`, `MONTHLY MEANS` (or
+`PERIOD MEANS` under four weeks), `CURRENT DURATION`, `CHECKS`, `STORAGE`. Each
+carries a one-line note on the title row.
+
+`RUN` lists every added plant and load with its connection point.
+`GENERATION BY PLANT` gives each plant's kind and connection point, added plants
+included. With added loads, `CHECKS` also gives the hours the corridor was
+overloaded by power drawn to a load, which curtailment cannot clear. With `--compare` the headline and cost tables gain a static column,
 a DLR column and the change in both the quantity's own unit and in per cent.
 
 ## Figures

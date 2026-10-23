@@ -128,6 +128,49 @@ LEN_LAT_WF3_A = LEN_WF_LATERAL_KM
 LEN_CAB_PV = 5.0                # 33 kV collector cable, array to substation
 LEN_LAT_BESS = 1.0              # 110 kV tie, battery substation to TAP_B
 
+# ── Connection points for added plants and loads ─────────────────────────────
+# Distance of every corridor bus from the head (SUB_A), in km. The two
+# midpoints sit halfway along each rating zone: MID_A_C halfway from SUB_A to
+# SUB_C, inside TAP_PV -> TAP_W, and MID_C_PCC halfway from SUB_C to the PCC,
+# inside SUB_C -> TAP_B. A midpoint bus is only built when something connects
+# to it; the segment it sits on is then built as two halves.
+CORRIDOR_POSITION_KM = {
+    "SUB_A": 0.0,
+    "TAP_PV": LEN_CORR_A_PV,
+    "MID_A_C": (LEN_CORR_A_PV + LEN_CORR_PV_W + LEN_CORR_W_C) / 2.0,      # 15 km
+    "TAP_W": LEN_CORR_A_PV + LEN_CORR_PV_W,
+    "SUB_C": LEN_CORR_A_PV + LEN_CORR_PV_W + LEN_CORR_W_C,
+    "MID_C_PCC": (LEN_CORR_A_PV + LEN_CORR_PV_W + LEN_CORR_W_C
+                  + CORRIDOR_LENGTH_KM) / 2.0,                            # 35.5 km
+    "TAP_B": CORRIDOR_LENGTH_KM - LEN_CORR_B_PCC,
+    "PCC": CORRIDOR_LENGTH_KM,
+}
+MIDPOINT_BUSES = ("MID_A_C", "MID_C_PCC")
+CONNECTION_POINTS = ("SUB_A", "MID_A_C", "SUB_C", "MID_C_PCC", "PCC")
+CONNECTION_POINT_NAMES = {
+    "SUB_A": "corridor head",
+    "MID_A_C": "midway from SUB_A to SUB_C",
+    "SUB_C": "substation between the two zones",
+    "MID_C_PCC": "midway from SUB_C to the PCC",
+    "PCC": "grid interface",
+}
+
+# The corridor bus each built-in plant joins, directly or over its lateral.
+DER_JOIN_BUS = {"WF_1": "TAP_W", "WF_2": "TAP_W", "WF_3": "SUB_A", "PV_1": "TAP_PV"}
+DER_KIND = {"WF_1": "wind", "WF_2": "wind", "WF_3": "wind", "PV_1": "solar"}
+
+# Added plants and loads. A plant joins its connection point through its own
+# 110/33 kV step-up transformer, sized with the same margin as T_PV over PV_1.
+# A load is a constant demand on the 110 kV busbar. The upper bound on either
+# is a guard against a mistyped number, not a network limit: the corridor
+# cannot carry anywhere near that much.
+ADDED_DER_KINDS = ("wind", "solar")
+ADDED_DER_PREFIX = {"wind": "WF", "solar": "PV"}
+ADDED_LOAD_PREFIX = "LOAD"
+ADDED_TRAFO_SN_RATIO = 1.25     # T_PV is 75 MVA for 60 MW
+ADDED_TRAFO = dict(vk_percent=12.0, vkr_percent=0.40)
+ADDED_MAX_MW = 1000.0
+
 # ── External grid Thevenin equivalent at the PCC ──────────────────────────────
 SRC_R_OHM = 2.0
 SRC_X_OHM = 10.0

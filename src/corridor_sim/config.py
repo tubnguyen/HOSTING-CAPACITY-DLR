@@ -7,6 +7,8 @@ from __future__ import annotations
 
 import argparse
 import dataclasses
+import math
+import re
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -35,6 +37,60 @@ def _default_data_dir() -> Path:
 DATA_DIR = _default_data_dir()
 
 
+def _number(value: float) -> str:
+    """A number as short text that reads back as the same number."""
+    text = f"{value:g}"
+    return text if float(text) == value else repr(float(value))
+
+
+@dataclass(frozen=True)
+class AddedPlant:
+    """A wind or solar plant added at one of the corridor's connection points.
+
+    Its output follows the shipped weather (wind) or solar profile, scaled to
+    its own rating; see dataio.available_power.
+    """
+
+    name: str                                       # WF_4, WF_5, ... or PV_2, PV_3, ...
+    kind: str                                       # "wind" | "solar"
+    mw: float
+    at: str                                         # one of C.CONNECTION_POINTS
+
+    @property
+    def spec(self) -> str:
+        """The --add-der text that adds this plant."""
+        return f"{self.kind}:{_number(self.mw)}@{self.at}"
+
+    @property
+    def tag(self) -> str:
+        """Its part of the run name, e.g. wf50-SUB_C."""
+        return f"{C.ADDED_DER_PREFIX[self.kind].lower()}{_number(self.mw)}-{self.at}"
+
+
+@dataclass(frozen=True)
+class AddedLoad:
+    """A large constant demand on a corridor busbar, such as a data centre."""
+
+    name: str                                       # LOAD_1, LOAD_2, ...
+    mw: float
+    at: str                                         # one of C.CONNECTION_POINTS
+    pf: float = 1.0                                 # lagging; 1.0 draws no reactive power
+
+    @property
+    def q_mvar(self) -> float:
+        return self.mw * math.tan(math.acos(self.pf))
+
+    @property
+    def spec(self) -> str:
+        """The --add-load text that adds this load."""
+        text = f"{_number(self.mw)}@{self.at}"
+        return text if self.pf == 1.0 else f"{text}:{_number(self.pf)}"
+
+    @property
+    def tag(self) -> str:
+        return f"ld{_number(self.mw)}-{self.at}"
+
+
 @dataclass(frozen=True)
 class Config:
     """A complete study specification."""
@@ -47,6 +103,7 @@ class Config:
     # Generation
     der_enabled: Mapping[str, bool] = field(
         default_factory=lambda: MappingProxyType(dict(ALL_ON)))
+    added_der: tuple[AddedPlant, ...] = ()          # plants beyond the four built in
     control_mode: str = "droop"                     # "droop" | "cosphi"
     pv_control_mode: str | None = None           # None inherits control_mode
     cosphi_sign: str = "absorb"                     # "absorb" | "inject"
@@ -66,6 +123,9 @@ class Config:
     dlr_wind_factor: float = C.DLR_WIND_FACTOR      # share of the wind that cools (mode 2)
     site_elevation_m: float = C.DLR_SITE_ELEVATION_M
     t_cond_max_c: float = C.T_COND_MAX_C
+
+    # Demand beyond the shipped load profiles
+    added_loads: tuple[AddedLoad, ...] = ()
 
     # Congestion management
     curtailment: bool = True
@@ -102,8 +162,46 @@ class Config:
         return self.pv_control_mode or self.control_mode
 
     @property
+    def units(self) -> tuple:
+        """Every generating unit in the network: the four built in, then any added."""
+        return DER_NAMES + tuple(p.name for p in self.added_der)
+
+    @property
+    def unit_rating_mw(self) -> dict:
+        ratings = dict(C.DER_RATING_MW)
+        ratings.update({p.name: p.mw for p in self.added_der})
+        return ratings
+
+    @property
+    def unit_q_limit_mvar(self) -> dict:
+        """Reactive capability of each unit: cos phi 0.95 at rated power."""
+        return {unit: mw * C.TAN_PHI for unit, mw in self.unit_rating_mw.items()}
+
+    @property
+    def unit_kind(self) -> dict:
+        kinds = dict(C.DER_KIND)
+        kinds.update({p.name: p.kind for p in self.added_der})
+        return kinds
+
+    @property
+    def unit_bus(self) -> dict:
+        """The corridor bus each unit joins."""
+        buses = dict(C.DER_JOIN_BUS)
+        buses.update({p.name: p.at for p in self.added_der})
+        return buses
+
+    def unit_mode(self, unit: str) -> str:
+        """Reactive control of one unit: solar follows pv_mode, wind control_mode."""
+        return self.pv_mode if self.unit_kind[unit] == "solar" else self.control_mode
+
+    def unit_enabled(self, unit: str) -> bool:
+        """A built-in plant is connected if enabled; an added one always is."""
+        return bool(self.der_enabled[unit]) if unit in self.der_enabled else True
+
+    @property
     def active_der(self) -> list:
-        return [n for n in DER_NAMES if self.der_enabled.get(n, False)]
+        return ([n for n in DER_NAMES if self.der_enabled.get(n, False)]
+                + [p.name for p in self.added_der])
 
     @property
     def n_der(self) -> int:
@@ -111,7 +209,22 @@ class Config:
 
     @property
     def der_fleet_mw(self) -> float:
-        return sum(C.DER_RATING_MW[n] for n in self.active_der)
+        ratings = self.unit_rating_mw
+        return sum(ratings[n] for n in self.active_der)
+
+    @property
+    def added_der_mw(self) -> float:
+        return sum(p.mw for p in self.added_der)
+
+    @property
+    def added_load_mw(self) -> float:
+        return sum(load.mw for load in self.added_loads)
+
+    @property
+    def midpoints_used(self) -> set:
+        """Midpoint buses something connects to, and so has to be built."""
+        points = {p.at for p in self.added_der} | {load.at for load in self.added_loads}
+        return points & set(C.MIDPOINT_BUSES)
 
     @property
     def line(self) -> dict:
@@ -182,7 +295,7 @@ class Config:
     @property
     def q_window_mvar(self) -> float:
         """Permitted reactive exchange at the PCC, set by the installed fleet."""
-        return min(C.Q_WINDOW_FRAC * C.FLEET_MW, C.Q_WINDOW_CAP_MVAR)
+        return min(C.Q_WINDOW_FRAC * (C.FLEET_MW + self.added_der_mw), C.Q_WINDOW_CAP_MVAR)
 
     @property
     def soc_min_mwh(self) -> float:
@@ -209,11 +322,17 @@ class Config:
 
     @property
     def stem(self) -> str:
-        """Filename stem describing this run."""
+        """Filename stem describing this run.
+
+        Each added plant and load appends its kind, size and connection point,
+        so runs that differ only in where something connects keep apart.
+        """
         if self.label:
             return self.label
-        return (f"{self.conductor}_der{self.n_der}_{self.control_mode}"
+        stem = (f"{self.conductor}_der{self.n_der}_{self.control_mode}"
                 f"_dlr{self.dlr_mode}_bess{int(self.storage_enabled)}")
+        tags = [p.tag for p in self.added_der] + [load.tag for load in self.added_loads]
+        return "_".join([stem] + tags)
 
 
 # ── Scenario matrix ──────────────────────────────────────────────────────────
@@ -264,6 +383,112 @@ def normalise_der(der) -> Mapping[str, bool]:
     return MappingProxyType({n: bool(der.get(n, True)) for n in DER_NAMES})
 
 
+def connection_point(text: str) -> str:
+    """A connection point named by the user, in its canonical spelling."""
+    point = str(text).strip().upper()
+    if point not in C.CONNECTION_POINTS:
+        raise ValueError(f"unknown connection point {text!r}; "
+                         f"valid: {list(C.CONNECTION_POINTS)}")
+    return point
+
+
+def _megawatts(text, what: str) -> float:
+    try:
+        mw = float(text)
+    except (TypeError, ValueError):
+        raise ValueError(f"{what}: {text!r} is not a number of MW") from None
+    if not (0.0 < mw <= C.ADDED_MAX_MW):
+        raise ValueError(f"{what}: {_number(mw)} MW is outside 0 to {C.ADDED_MAX_MW:g} MW")
+    return mw
+
+
+def parse_der_spec(text: str) -> dict:
+    """Read an --add-der value, KIND:MW@POINT, e.g. wind:50@SUB_C."""
+    kind, sep, rest = str(text).partition(":")
+    mw, at_sign, point = rest.partition("@")
+    if not sep or not at_sign:
+        raise ValueError(f"--add-der {text!r}: expected KIND:MW@POINT, e.g. wind:50@SUB_C")
+    kind = kind.strip().lower()
+    if kind not in C.ADDED_DER_KINDS:
+        raise ValueError(f"--add-der {text!r}: unknown kind {kind!r}; "
+                         f"valid: {list(C.ADDED_DER_KINDS)}")
+    return {"kind": kind, "mw": _megawatts(mw, f"--add-der {text!r}"),
+            "at": connection_point(point)}
+
+
+def parse_load_spec(text: str) -> dict:
+    """Read an --add-load value, MW@POINT or MW@POINT:PF, e.g. 80@SUB_C."""
+    mw, at_sign, rest = str(text).partition("@")
+    point, colon, pf = rest.partition(":")
+    if not at_sign:
+        raise ValueError(f"--add-load {text!r}: expected MW@POINT, e.g. 80@SUB_C")
+    spec = {"mw": _megawatts(mw, f"--add-load {text!r}"), "at": connection_point(point)}
+    if colon:
+        try:
+            spec["pf"] = float(pf)
+        except ValueError:
+            raise ValueError(f"--add-load {text!r}: power factor {pf!r} "
+                             f"is not a number") from None
+    return spec
+
+
+def _fill_names(items: list, prefix_of, taken: set) -> list:
+    """Give every item without a name the next free <prefix>_<n>."""
+    taken = set(taken) | {item["name"] for item in items if item.get("name")}
+    for item in items:
+        if not item.get("name"):
+            prefix, n = prefix_of(item), 1
+            while f"{prefix}_{n}" in taken:
+                n += 1
+            item["name"] = f"{prefix}_{n}"
+            taken.add(item["name"])
+    return items
+
+
+def _as_dict(item, parse, record_type) -> dict:
+    if isinstance(item, record_type):
+        return dataclasses.asdict(item)
+    if isinstance(item, str):
+        return parse(item)
+    if isinstance(item, Mapping):
+        return dict(item)
+    raise ValueError(f"cannot read {item!r} as a {record_type.__name__}")
+
+
+def normalise_added_der(items) -> tuple:
+    """Accept AddedPlant records, dicts or --add-der texts; return named records.
+
+    An item without a name is called after its kind, numbered on from the
+    built-in plants: the first added wind farm is WF_4, the first solar plant
+    PV_2.
+    """
+    dicts = [_as_dict(item, parse_der_spec, AddedPlant) for item in (items or ())]
+    for item in dicts:
+        item["kind"] = str(item.get("kind", "")).strip().lower()
+        item["at"] = str(item.get("at", "")).strip().upper()
+        item["mw"] = float(item["mw"]) if "mw" in item else float("nan")
+    dicts = _fill_names(dicts, lambda item: C.ADDED_DER_PREFIX.get(item["kind"], "DER"),
+                        set(DER_NAMES))
+    try:
+        return tuple(AddedPlant(**item) for item in dicts)
+    except TypeError as exc:
+        raise ValueError(f"bad added plant: {exc}") from None
+
+
+def normalise_added_loads(items) -> tuple:
+    """Accept AddedLoad records, dicts or --add-load texts; return named records."""
+    dicts = [_as_dict(item, parse_load_spec, AddedLoad) for item in (items or ())]
+    for item in dicts:
+        item["at"] = str(item.get("at", "")).strip().upper()
+        item["mw"] = float(item["mw"]) if "mw" in item else float("nan")
+        item["pf"] = float(item.get("pf", 1.0))
+    dicts = _fill_names(dicts, lambda item: C.ADDED_LOAD_PREFIX, set())
+    try:
+        return tuple(AddedLoad(**item) for item in dicts)
+    except TypeError as exc:
+        raise ValueError(f"bad added load: {exc}") from None
+
+
 def build_config(preset: str | None = None, **overrides) -> Config:
     """Field defaults, then the named preset, then explicit overrides.
 
@@ -274,6 +499,8 @@ def build_config(preset: str | None = None, **overrides) -> Config:
     fields = dict(PRESETS[preset]) if preset else {}
     fields.update(overrides)
     fields["der_enabled"] = normalise_der(fields.get("der_enabled"))
+    fields["added_der"] = normalise_added_der(fields.get("added_der"))
+    fields["added_loads"] = normalise_added_loads(fields.get("added_loads"))
     cfg = Config(**fields)
     validate(cfg)
     return cfg
@@ -315,6 +542,7 @@ def validate(cfg: Config) -> None:
     require(cfg.wf_trafo_units in {1, 2}, "wf_trafo_units must be 1 or 2")
     require(set(cfg.der_enabled) == set(DER_NAMES),
             f"der_enabled must cover every DER {list(DER_NAMES)}")
+    _validate_added(cfg, require)
     require(cfg.storage_connection in {"tie", "direct"},
             f"bad storage_connection {cfg.storage_connection!r}; valid: ['direct', 'tie']")
     require(cfg.storage_q_mode in {"droop", "cosphi", "fixed", "unity"},
@@ -338,6 +566,39 @@ def validate(cfg: Config) -> None:
             "prices must not be negative")
 
 
+def _validate_added(cfg: Config, require) -> None:
+    """Added plants and loads: known kinds and points, sizes, unique names.
+
+    A name has to be <prefix>_<n>. The network names a plant's busbar and
+    transformer after it, so a free-form name could land on an element that
+    already exists and quietly take its place in the index.
+    """
+    points = list(C.CONNECTION_POINTS)
+    for plant in cfg.added_der:
+        require(isinstance(plant, AddedPlant), f"added_der holds {plant!r}, not an AddedPlant")
+        require(plant.kind in C.ADDED_DER_KINDS,
+                f"bad kind {plant.kind!r} for {plant.name}; valid: {list(C.ADDED_DER_KINDS)}")
+        require(0.0 < plant.mw <= C.ADDED_MAX_MW,
+                f"{plant.name} rating must be above 0 and at most {C.ADDED_MAX_MW:g} MW")
+        require(plant.at in C.CONNECTION_POINTS,
+                f"bad connection point {plant.at!r} for {plant.name}; valid: {points}")
+        prefix = C.ADDED_DER_PREFIX[plant.kind]
+        require(re.fullmatch(rf"{prefix}_\d+", plant.name) is not None,
+                f"added {plant.kind} plant name {plant.name!r} must be {prefix}_<n>")
+    for load in cfg.added_loads:
+        require(isinstance(load, AddedLoad), f"added_loads holds {load!r}, not an AddedLoad")
+        require(0.0 < load.mw <= C.ADDED_MAX_MW,
+                f"{load.name} demand must be above 0 and at most {C.ADDED_MAX_MW:g} MW")
+        require(load.at in C.CONNECTION_POINTS,
+                f"bad connection point {load.at!r} for {load.name}; valid: {points}")
+        require(0.0 < load.pf <= 1.0, f"{load.name} power factor must be in (0, 1]")
+        require(re.fullmatch(rf"{C.ADDED_LOAD_PREFIX}_\d+", load.name) is not None,
+                f"added load name {load.name!r} must be {C.ADDED_LOAD_PREFIX}_<n>")
+    names = list(cfg.units) + [load.name for load in cfg.added_loads]
+    require(len(names) == len(set(names)),
+            f"added plant and load names must be unique and differ from {list(DER_NAMES)}")
+
+
 def to_record(cfg: Config) -> dict:
     """Every field of a Config as plain JSON values, so a run can be rebuilt."""
     record = {}
@@ -345,6 +606,8 @@ def to_record(cfg: Config) -> dict:
         value = getattr(cfg, f.name)
         if f.name == "der_enabled":
             value = [n for n in DER_NAMES if value.get(n, False)]
+        elif f.name in ("added_der", "added_loads"):
+            value = [dataclasses.asdict(item) for item in value]
         elif isinstance(value, Path):
             value = str(value)
         record[f.name] = value
@@ -370,6 +633,7 @@ class RunOptions(NamedTuple):
 
     plots: bool = True
     compare: bool = False       # also simulate the static case and compare
+    interactive: bool = False   # ask for the scenario instead of reading flags
 
 
 def parse_args(argv=None):
@@ -401,7 +665,15 @@ def parse_args(argv=None):
                    help="share of the conductor-height wind counted as cooling in mode 2 "
                         f"(default {C.DLR_WIND_FACTOR:g})")
     p.add_argument("--control", dest="control_mode", choices=["droop", "cosphi"])
-    p.add_argument("--der", help="comma-separated DER to connect, e.g. WF_1,WF_2,PV_1")
+    p.add_argument("--der", help="comma-separated built-in plants to connect, e.g. "
+                                 "WF_1,WF_2,PV_1, or 'all' or 'none'")
+    points = ", ".join(C.CONNECTION_POINTS)
+    p.add_argument("--add-der", dest="add_der", action="append", metavar="KIND:MW@POINT",
+                   help="add a wind or solar plant, e.g. wind:50@SUB_C; repeat to add "
+                        f"more. POINT is one of {points}")
+    p.add_argument("--add-load", dest="add_load", action="append", metavar="MW@POINT[:PF]",
+                   help="add a large constant load, e.g. 80@SUB_C or 80@SUB_C:0.95; "
+                        "repeat to add more")
     p.add_argument("--storage", dest="storage_enabled", action="store_true", default=None)
     p.add_argument("--no-curtailment", dest="curtailment", action="store_false", default=None)
     p.add_argument("--export-cap", dest="export_cap_mw", type=float)
@@ -420,6 +692,10 @@ def parse_args(argv=None):
     p.add_argument("--no-plots", dest="plots", action="store_false", default=True)
     p.add_argument("--compare", action="store_true",
                    help="also run the same case at the static rating and compare the two")
+    p.add_argument("-i", "--interactive", action="store_true",
+                   help="ask for the scenario question by question; any other options "
+                        "given are the defaults offered. Running with no options in a "
+                        "terminal does the same")
     a = p.parse_args(argv)
 
     # An unset flag means "do not override", so None values are dropped here
@@ -428,7 +704,8 @@ def parse_args(argv=None):
     # parsed flag, not by searching argv for its text, because argparse also
     # accepts an unambiguous prefix such as --no-rating.
     over = {k: v for k, v in vars(a).items()
-            if k not in {"preset", "der", "plots", "compare", "azimuth", "no_rating_cap"}
+            if k not in {"preset", "der", "plots", "compare", "azimuth", "no_rating_cap",
+                         "add_der", "add_load", "interactive"}
             and v is not None}
     if a.no_rating_cap:
         over["dlr_cap_ratio"] = None
@@ -437,7 +714,93 @@ def parse_args(argv=None):
         over.setdefault("azimuth_z1_deg", a.azimuth)
         over.setdefault("azimuth_z2_deg", a.azimuth)
     if a.der is not None:
-        over["der_enabled"] = [s.strip() for s in a.der.split(",") if s.strip()]
+        over["der_enabled"] = parse_der_list(a.der)
+    if a.add_der is not None:
+        over["added_der"] = list(a.add_der)
+    if a.add_load is not None:
+        over["added_loads"] = list(a.add_load)
     if a.end is not None:
         over["days"] = None
-    return build_config(a.preset, **over), RunOptions(plots=a.plots, compare=a.compare)
+    return build_config(a.preset, **over), RunOptions(plots=a.plots, compare=a.compare,
+                                                      interactive=a.interactive)
+
+
+def parse_der_list(text: str) -> list:
+    """A --der value: built-in plant names separated by commas, 'all' or 'none'."""
+    names = [s.strip().upper() for s in str(text).split(",") if s.strip()]
+    if names == ["ALL"]:
+        return list(DER_NAMES)
+    if names == ["NONE"]:
+        return []
+    return names
+
+
+def to_argv(cfg: Config, options: RunOptions = RunOptions()) -> list:
+    """The command-line options that reproduce `cfg` and `options`.
+
+    The inverse of parse_args: a setting at its default is left out, so the
+    result is the shortest command for the run. Settings only reachable from
+    Python have no option and are not represented.
+    """
+    d = Config()
+    argv = []
+
+    def flag(name: str, value) -> None:
+        argv.extend([name, value if isinstance(value, str) else _number(value)])
+
+    if cfg.conductor != d.conductor:
+        flag("--conductor", cfg.conductor)
+    if cfg.dlr_mode != d.dlr_mode:
+        flag("--dlr", str(cfg.dlr_mode))
+    if cfg.dlr_cap_ratio is None:
+        argv.append("--no-rating-cap")
+    elif cfg.dlr_cap_ratio != d.dlr_cap_ratio:
+        flag("--dlr-cap-ratio", cfg.dlr_cap_ratio)
+    if not cfg.equipment_limit:
+        argv.append("--no-equipment-limit")
+    z1, z2 = cfg.azimuth_z1_deg, cfg.azimuth_z2_deg
+    if z1 == z2 and (z1, z2) != (d.azimuth_z1_deg, d.azimuth_z2_deg):
+        flag("--azimuth", z1)
+    else:
+        if z1 != d.azimuth_z1_deg:
+            flag("--azimuth-z1", z1)
+        if z2 != d.azimuth_z2_deg:
+            flag("--azimuth-z2", z2)
+    if cfg.dlr_wind_factor != d.dlr_wind_factor:
+        flag("--wind-factor", cfg.dlr_wind_factor)
+    if cfg.control_mode != d.control_mode:
+        flag("--control", cfg.control_mode)
+    built = [n for n in DER_NAMES if cfg.der_enabled.get(n, False)]
+    if built != list(DER_NAMES):
+        flag("--der", ",".join(built) if built else "none")
+    for plant in cfg.added_der:
+        flag("--add-der", plant.spec)
+    for load in cfg.added_loads:
+        flag("--add-load", load.spec)
+    if cfg.storage_enabled:
+        argv.append("--storage")
+    if not cfg.curtailment:
+        argv.append("--no-curtailment")
+    if cfg.export_cap_mw != d.export_cap_mw:
+        flag("--export-cap", cfg.export_cap_mw)
+    if cfg.start != d.start:
+        flag("--start", str(cfg.start))
+    if cfg.days is None:
+        flag("--end", str(cfg.end))
+    elif cfg.days != d.days:
+        flag("--days", str(cfg.days))
+    if Path(cfg.data_dir) != Path(d.data_dir):
+        flag("--data-dir", str(cfg.data_dir))
+    if Path(cfg.out_dir) != Path(d.out_dir):
+        flag("--out", str(cfg.out_dir))
+    if cfg.label:
+        flag("--label", cfg.label)
+    if cfg.energy_price_eur_mwh != d.energy_price_eur_mwh:
+        flag("--energy-price", cfg.energy_price_eur_mwh)
+    if cfg.reactive_price_eur_mvarh != d.reactive_price_eur_mvarh:
+        flag("--reactive-price", cfg.reactive_price_eur_mvarh)
+    if not options.plots:
+        argv.append("--no-plots")
+    if options.compare:
+        argv.append("--compare")
+    return argv

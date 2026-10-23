@@ -5,7 +5,7 @@ import multiprocessing
 import sys
 from pathlib import Path
 
-from . import dataio, dlr, network, plots, reference, report, simulate
+from . import dataio, dlr, interactive, network, plots, reference, report, simulate
 from .config import from_record, parse_args, to_record
 
 RATING_NAMES = {0: "static", 1: "ambient-adjusted", 2: "full-weather"}
@@ -136,12 +136,29 @@ def main(argv=None) -> int:
     dataset that does not cover the window - so they exit with a line of text
     rather than a traceback. Anything else is a bug in the model and keeps its
     traceback, which is what a bug report needs.
+
+    With -i, or with no options at all from a terminal, the scenario is asked
+    for question by question (interactive.py). No options without a terminal,
+    as in a script or a pipe, still runs the defaults.
     """
+    args = sys.argv[1:] if argv is None else list(argv)
     try:
-        cfg, options = parse_args(argv)
+        cfg, options = parse_args(args)
     except (ValueError, KeyError) as exc:
         print(f"corridor-sim: {exc}", file=sys.stderr)
         return 2
+    if options.interactive or (argv is None and not args and interactive.is_terminal()):
+        try:
+            chosen = interactive.ask_scenario(cfg, options)
+        except (interactive.Cancelled, KeyboardInterrupt):
+            print("\ncorridor-sim: stopped, nothing was run", file=sys.stderr)
+            return 1
+        except (ValueError, KeyError) as exc:
+            print(f"corridor-sim: {exc}", file=sys.stderr)
+            return 2
+        if chosen is None:
+            return 0
+        cfg, options = chosen
     print(f"corridor-sim  ·  {cfg.stem}")
     try:
         run_scenario(cfg, make_plots=options.plots, compare=options.compare)

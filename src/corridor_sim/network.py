@@ -17,6 +17,13 @@ taps, and a 20 km lateral from each wind farm to its tap.
 
 Every element is built on every run. Disabling a plant zeroes its power rather
 than removing it, so all scenarios share one topology and stay comparable.
+
+Added plants and loads (Config.added_der, Config.added_loads) connect at
+SUB_A, SUB_C, the PCC or one of two midpoints, MID_A_C and MID_C_PCC. A
+midpoint bus exists only while something connects to it: the segment it sits
+on, TAP_PV -> TAP_W or SUB_C -> TAP_B, is then built as two halves named
+<segment>_1 and <segment>_2, with the same conductor and total length. A study
+with nothing at a midpoint builds exactly the network it always did.
 """
 from __future__ import annotations
 
@@ -27,13 +34,33 @@ import pandapower as pp
 
 from . import constants as C
 
-# Corridor segments carrying export current, grouped by rating zone.
+# Corridor segments carrying export current, grouped by rating zone. Each
+# segment that can hold a midpoint is listed whole and as its two halves; a
+# network has one form or the other, and every reader skips a line it lacks.
 CORRIDOR_ZONES = {
-    "Z1": ["CORR_A_PV", "CORR_PV_W", "CORR_W_C"],
-    "Z2": ["CORR_C_B", "CORR_B_PCC", "LINK_PCC_E", "SPUR_B_E"],
+    "Z1": ["CORR_A_PV", "CORR_PV_W", "CORR_PV_W_1", "CORR_PV_W_2", "CORR_W_C"],
+    "Z2": ["CORR_C_B", "CORR_C_B_1", "CORR_C_B_2", "CORR_B_PCC", "LINK_PCC_E", "SPUR_B_E"],
 }
 CORRIDOR_LINES = [n for lines in CORRIDOR_ZONES.values() for n in lines]
-EXPORT_PATH_LINES = ["CORR_A_PV", "CORR_PV_W", "CORR_W_C", "CORR_C_B", "CORR_B_PCC"]
+EXPORT_PATH_LINES = ["CORR_A_PV", "CORR_PV_W", "CORR_PV_W_1", "CORR_PV_W_2", "CORR_W_C",
+                     "CORR_C_B", "CORR_C_B_1", "CORR_C_B_2", "CORR_B_PCC"]
+
+# The two buses at the ends of every export path segment, head side first.
+# Each is built from its head-side bus, so positive active power at the
+# from-end is export and negative is power drawn back toward the head.
+SEGMENT_ENDS = {
+    "CORR_A_PV": ("SUB_A", "TAP_PV"),
+    "CORR_PV_W": ("TAP_PV", "TAP_W"),
+    "CORR_PV_W_1": ("TAP_PV", "MID_A_C"),
+    "CORR_PV_W_2": ("MID_A_C", "TAP_W"),
+    "CORR_W_C": ("TAP_W", "SUB_C"),
+    "CORR_C_B": ("SUB_C", "TAP_B"),
+    "CORR_C_B_1": ("SUB_C", "MID_C_PCC"),
+    "CORR_C_B_2": ("MID_C_PCC", "TAP_B"),
+    "CORR_B_PCC": ("TAP_B", "PCC"),
+}
+# Midpoint bus -> the segment it splits.
+SPLIT_SEGMENT = {"MID_A_C": "CORR_PV_W", "MID_C_PCC": "CORR_C_B"}
 
 DSO_TRAFO_NAMES = list(C.DSO_TRAFOS)
 PLANT_LINES = ["LAT_WF1_TAP", "LAT_WF2_TAP", "LAT_WF3_A", "CAB_PV", "LAT_BESS"]
@@ -44,8 +71,16 @@ HV_BUSES = ["PCC", "SUB_C", "TAP_W", "TAP_PV", "SUB_A", "SUB_B", "SUB_E", "TAP_B
 
 SGEN_BUS = {"WF_1": "WF_1_MV", "WF_2": "WF_2_MV", "WF_3": "WF_3_MV", "PV_1": "PV_ARRAY"}
 
-# Bus each plant regulates against under the "local" droop policy.
-DROOP_LOCAL_BUS = {"WF_1": "TAP_W", "WF_2": "TAP_W", "WF_3": "SUB_A", "PV_1": "TAP_PV"}
+
+def added_trafo_name(unit: str) -> str:
+    """The step-up transformer of an added plant."""
+    return f"T_{unit}"
+
+
+def added_mv_bus(unit: str) -> str:
+    """The 33 kV busbar an added plant injects at."""
+    return f"{unit}_MV"
+
 
 _TRAFO_KWARGS = inspect.signature(pp.create_transformer_from_parameters).parameters
 _HAS_TAP_TYPE = "tap_changer_type" in _TRAFO_KWARGS
@@ -88,11 +123,24 @@ def build(cfg):
             **{k: v for k, v in par.items() if k != "type"})
 
     corr = {k: line_par[k] for k in ("r_ohm_per_km", "x_ohm_per_km", "c_nf_per_km", "max_i_ka")}
-    line("SUB_A", "TAP_PV", C.LEN_CORR_A_PV, corr, "CORR_A_PV")
-    line("TAP_PV", "TAP_W", C.LEN_CORR_PV_W, corr, "CORR_PV_W")
-    line("TAP_W", "SUB_C", C.LEN_CORR_W_C, corr, "CORR_W_C")
-    line("SUB_C", "TAP_B", C.LEN_CORR_C_B, corr, "CORR_C_B")
-    line("TAP_B", "PCC", C.LEN_CORR_B_PCC, corr, "CORR_B_PCC")
+    for midpoint in sorted(cfg.midpoints_used):
+        b[midpoint] = pp.create_bus(net, vn_kv=C.V_HV_KV, name=midpoint)
+
+    def segment(name):
+        """One export path segment, or its two halves when its midpoint is built."""
+        head, tail = SEGMENT_ENDS[name]
+        midpoint = next((m for m, whole in SPLIT_SEGMENT.items() if whole == name), None)
+        if midpoint is None or midpoint not in b:
+            km = C.CORRIDOR_POSITION_KM[tail] - C.CORRIDOR_POSITION_KM[head]
+            line(head, tail, km, corr, name)
+            return
+        for half in (f"{name}_1", f"{name}_2"):
+            frm, to = SEGMENT_ENDS[half]
+            km = C.CORRIDOR_POSITION_KM[to] - C.CORRIDOR_POSITION_KM[frm]
+            line(frm, to, km, corr, half)
+
+    for name in ("CORR_A_PV", "CORR_PV_W", "CORR_W_C", "CORR_C_B", "CORR_B_PCC"):
+        segment(name)
     line("PCC", "SUB_E", C.LEN_LINK_PCC_E, corr, "LINK_PCC_E")
     line("SUB_B", "SUB_E", C.LEN_SPUR_B_E, corr, "SPUR_B_E")
 
@@ -152,6 +200,9 @@ def build(cfg):
     # Downstream demand metered at the PCC busbar; it reduces net export but
     # not corridor current, because it sits beyond the constrained section.
     pp.create_load(net, bus=b["PCC"], p_mw=0, q_mvar=0, name="LOAD_AGG")
+    # Added large loads: constant demand straight on the 110 kV busbar.
+    for load in cfg.added_loads:
+        pp.create_load(net, bus=b[load.at], p_mw=load.mw, q_mvar=load.q_mvar, name=load.name)
 
     # ── Shunt compensation ───────────────────────────────────────────────────
     for name, bus in [("RX_SUB_A", "SUB_A_MV"), ("RX_SUB_B", "SUB_B_MV")]:
@@ -165,6 +216,18 @@ def build(cfg):
     for name, bus in SGEN_BUS.items():
         pp.create_sgen(net, bus=b[bus], p_mw=0, q_mvar=0,
                        sn_mva=C.DER_RATING_MW[name] / C.COS_PHI, name=name)
+    # Added plants: each behind its own 110/33 kV step-up transformer at its
+    # connection point, sized with the margin T_PV has over PV_1.
+    for plant in cfg.added_der:
+        mv = added_mv_bus(plant.name)
+        b[mv] = pp.create_bus(net, vn_kv=C.V_COLLECTOR_KV, name=mv)
+        pp.create_transformer_from_parameters(
+            net, hv_bus=b[plant.at], lv_bus=b[mv], vn_hv_kv=C.V_HV_KV,
+            vn_lv_kv=C.V_COLLECTOR_KV, sn_mva=C.ADDED_TRAFO_SN_RATIO * plant.mw,
+            pfe_kw=0, i0_percent=0, shift_degree=0, name=added_trafo_name(plant.name),
+            **C.ADDED_TRAFO, **_tap_kwargs(controllable=False))
+        pp.create_sgen(net, bus=b[mv], p_mw=0, q_mvar=0, sn_mva=plant.mw / C.COS_PHI,
+                       name=plant.name)
     pp.create_storage(net, bus=storage_bus, p_mw=0.0, q_mvar=0.0,
                       max_e_mwh=cfg.storage_e_mwh, min_e_mwh=0.0,
                       soc_percent=100.0 * cfg.storage_soc_init,
@@ -177,8 +240,9 @@ def build(cfg):
 
 def summary(cfg, net) -> str:
     """One-line description of what was built."""
+    loads = (f" | added load {cfg.added_load_mw:.0f} MW" if cfg.added_loads else "")
     return (f"{len(net.bus)} buses, {len(net.line)} lines, {len(net.trafo)} transformers, "
             f"{len(net.sgen)} plants | conductor={cfg.conductor} "
             f"({cfg.bundle_n}x, static {cfg.static_rating_a:.0f} A) | "
-            f"DER {cfg.n_der}/4 = {cfg.der_fleet_mw:.0f} MW | "
+            f"DER {cfg.n_der}/{len(cfg.units)} = {cfg.der_fleet_mw:.0f} MW{loads} | "
             f"storage {'on' if cfg.storage_enabled else 'off'}")

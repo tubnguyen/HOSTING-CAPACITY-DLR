@@ -34,7 +34,7 @@ _NOT_IN_STATIC_KEY = {
 
 # Modules that only report or orchestrate. Editing any other module may change
 # a result, so it makes every earlier static run unusable as a reference.
-_NOT_IN_MODEL = {"cli.py", "plots.py", "reference.py", "report.py"}
+_NOT_IN_MODEL = {"cli.py", "interactive.py", "plots.py", "reference.py", "report.py"}
 
 
 class Reference(NamedTuple):
@@ -73,6 +73,8 @@ def static_key(cfg: Config) -> str:
     fields = {f.name: getattr(cfg, f.name) for f in dataclasses.fields(cfg)
               if f.name not in _NOT_IN_STATIC_KEY}
     fields["der_enabled"] = dict(cfg.der_enabled)
+    fields["added_der"] = [dataclasses.asdict(p) for p in cfg.added_der]
+    fields["added_loads"] = [dataclasses.asdict(load) for load in cfg.added_loads]
     fields["window"] = [cfg.start_ts.isoformat(), cfg.end_ts.isoformat()]
     fields["data"] = _digest(Path(cfg.data_dir) / name for name in FILES.values())
     package = Path(__file__).resolve().parent

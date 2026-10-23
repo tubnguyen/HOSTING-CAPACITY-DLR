@@ -27,9 +27,7 @@ import pandapower as pp
 
 from . import constants as C
 from .constraints import measure_pcc_export
-from .network import DROOP_LOCAL_BUS
-
-DROOP_UNITS = ("WF_1", "WF_2", "WF_3", "PV_1", C.BESS_NAME)
+from .network import DSO_TRAFO_NAMES, HV_BUSES, PLANT_TRAFOS
 
 
 @dataclass
@@ -58,6 +56,17 @@ class NetIndex:
     @property
     def reactor_buses(self) -> list:
         return ["SUB_A_MV", "SUB_B_MV"]
+
+    @property
+    def hv_buses(self) -> list:
+        """The 110 kV buses checked against the voltage band, midpoints included."""
+        return HV_BUSES + [m for m in C.MIDPOINT_BUSES if m in self.buses]
+
+    @property
+    def added_trafos(self) -> list:
+        """Step-up transformers of added plants, in the order they were built."""
+        known = set(DSO_TRAFO_NAMES) | set(PLANT_TRAFOS)
+        return [name for name in self.trafos if name not in known]
 
 
 # ── Power flow ───────────────────────────────────────────────────────────────
@@ -303,7 +312,7 @@ def measurement_bus(cfg, unit: str) -> str:
         return "TAP_W"
     if cfg.droop_measurement == "pilot_sub_a":
         return "SUB_A"
-    return DROOP_LOCAL_BUS[unit]
+    return cfg.unit_bus[unit]
 
 
 def measured_voltage(net, idx, cfg, unit: str) -> float:
@@ -360,11 +369,11 @@ def _entry_solve(net, cfg, idx, dispatch: dict, warm_start: bool) -> bool:
     """
     if solve(net, "results" if warm_start else "dc", deep=True):
         return True
-    for unit in ("WF_1", "WF_2", "WF_3", "PV_1"):
-        mode = cfg.pv_mode if unit == "PV_1" else cfg.control_mode
-        if mode == "droop":
+    q_limit = cfg.unit_q_limit_mvar
+    for unit in cfg.units:
+        if cfg.unit_mode(unit) == "droop":
             net.sgen.at[idx.sgens[unit], "q_mvar"] = min(
-                C.Q_LIMIT_MVAR[unit], dispatch[unit] * C.TAN_PHI)
+                q_limit[unit], dispatch[unit] * C.TAN_PHI)
     if cfg.storage_droop_active:
         # pandapower counts storage reactive power as consumption, so
         # injecting is negative here, unlike on the plants above.
@@ -423,6 +432,8 @@ def regulate(net, cfg, idx, dispatch: dict, reactor_state: dict, warm_start=True
         net.shunt.at[idx.shunts[name], "q_mvar"] = C.REACTOR_STEPS_MVAR[state[name]]
 
     ok = _entry_solve(net, cfg, idx, dispatch, warm_start)
+    rating, q_limit = cfg.unit_rating_mw, cfg.unit_q_limit_mvar
+    droop_units = cfg.units + (C.BESS_NAME,)
     result = {
         "ok": ok, "iterations": 0, "converged": False, "reactor_state": state,
         "reactor_flag": "not_converged", "q_flag": "not_converged",
@@ -431,15 +442,15 @@ def regulate(net, cfg, idx, dispatch: dict, reactor_state: dict, warm_start=True
         "oltc_frozen": 0, "reactor_frozen": 0, "droop_gated": 0,
         "q_tracking_error_mvar": 0.0, "min_damping": C.DROOP_Q_DAMP,
         "backtracks": 0, "q_saturated": 0,
-        "taps": {}, "q_ref": dict.fromkeys(DROOP_UNITS, 0.0),
+        "taps": {}, "q_ref": dict.fromkeys(droop_units, 0.0),
     }
 
     # Count units whose droop is suppressed by the low-output gate, so withheld
     # reactive support is visible rather than silent.
     gated = 0
-    for unit in ("WF_1", "WF_2", "WF_3", "PV_1"):
-        mode = cfg.pv_mode if unit == "PV_1" else cfg.control_mode
-        if mode == "droop" and dispatch[unit] < cfg.droop_p_min_frac * C.DER_RATING_MW[unit]:
+    for unit in cfg.units:
+        if (cfg.unit_mode(unit) == "droop"
+                and dispatch[unit] < cfg.droop_p_min_frac * rating[unit]):
             gated += 1
     result["droop_gated"] = gated
     if not ok:
@@ -447,7 +458,7 @@ def regulate(net, cfg, idx, dispatch: dict, reactor_state: dict, warm_start=True
 
     oltc_budget = MoveBudget(C.OLTC_MOVE_BUDGET)
     reactor_budget = MoveBudget(C.REACTOR_MOVE_BUDGET)
-    relax = _Relaxation(DROOP_UNITS)
+    relax = _Relaxation(droop_units)
     taps_a, taps_b = _read_taps(net, idx)
     taps_entry = {**taps_a, **taps_b}
     reactor_entry = dict(state)
@@ -465,14 +476,13 @@ def regulate(net, cfg, idx, dispatch: dict, reactor_state: dict, warm_start=True
         moved = q_moved = False
         current_v: dict = {}
 
-        for unit in ("WF_1", "WF_2", "WF_3", "PV_1"):
-            mode = cfg.pv_mode if unit == "PV_1" else cfg.control_mode
-            if mode != "droop":
+        for unit in cfg.units:
+            if cfg.unit_mode(unit) != "droop":
                 continue
             v = measured_voltage(net, idx, cfg, unit)
             current_v[unit] = v
-            q_ref = droop_reference(v, dispatch[unit], C.Q_LIMIT_MVAR[unit],
-                                    C.DER_RATING_MW[unit], cfg.droop_p_min_frac)
+            q_ref = droop_reference(v, dispatch[unit], q_limit[unit],
+                                    rating[unit], cfg.droop_p_min_frac)
             s_idx = idx.sgens[unit]
             q_now = float(net.sgen.at[s_idx, "q_mvar"])
             q_new = relax.step(unit, q_now, q_ref)
@@ -557,8 +567,8 @@ def regulate(net, cfg, idx, dispatch: dict, reactor_state: dict, warm_start=True
             break
 
     saturated = sum(
-        abs(float(net.sgen.at[idx.sgens[u], "q_mvar"])) >= 0.99 * C.Q_LIMIT_MVAR[u]
-        for u in ("WF_1", "WF_2", "WF_3", "PV_1"))
+        abs(float(net.sgen.at[idx.sgens[u], "q_mvar"])) >= 0.99 * q_limit[u]
+        for u in cfg.units)
     def record_actuators() -> None:
         """Refresh the actuator counters from the state as it now stands.
 
