@@ -17,23 +17,30 @@ Two properties the search depends on:
 * each trial restarts from the entry reactive power, so a trial is a pure
   function of the cut and the bracket stays meaningful.
 
-Who shares the cut depends on what binds. An over-voltage, the export cap or
-an overloaded transformer is shared by every connected plant. A corridor
-overload is shared only by the plants whose power flows through the
-overloaded segment, those joining the corridor at or upstream of its
-head-side end: a plant connected further along, at the PCC for one, puts no
-current through that segment and is not cut for it. With the four built-in
-plants the segment that binds carries all of them, so nothing changes there.
+Every plant that is cut in a step gives up the same share of what it is
+producing at that moment: one fraction, applied to each plant's
+instantaneous output, so a plant producing twice as much is cut twice as
+many megawatts. That share is recorded per step as `curtail_fraction`.
 
-A segment overloaded by power drawn toward the head, to supply a large load
-up the corridor, is not curtailed for at all: generation is what relieves
-it, not what causes it.
+Which plants share it depends on what binds. An over-voltage, the export cap
+or an overloaded transformer is shared by every connected plant, and so is
+any step in which one of them binds. A corridor overload alone is shared by
+the plants whose power flows through the overloaded segment, those joining
+at or upstream of its head-side end: a plant connected further along, at the
+PCC for one, puts no current through that segment and is not cut for it.
+With the four built-in plants the segment that binds carries all of them.
+
+The cut is searched on the solved network, so a large load is accounted for
+before anything is curtailed: what the load draws locally never reaches the
+congested segment, and only the excess beyond what the network can carry
+and the load can use is cut. A segment overloaded by power drawn toward the
+head, to supply a large load up the corridor, is not curtailed for at all:
+generation is what relieves it, not what causes it.
 """
 from __future__ import annotations
 
 from . import constants as C
 from .constraints import (
-    MARGIN_SCALE,
     cause_class,
     classify_residual,
     drawn_overload,
@@ -88,7 +95,7 @@ def default_record(cfg) -> dict:
     return {
         "curtailment_enabled": cfg.curtailment,
         **{f"curtailed_{unit}_mw": 0.0 for unit in cfg.units},
-        "curtailed_total_mw": 0.0,
+        "curtailed_total_mw": 0.0, "curtail_fraction": 0.0,
         "binding_before": "none", "binding_after": "none",
         "binding_all_before": "none", "binding_all_after": "none",
         "curtail_cause": "none", "curtail_exit": "not_needed",
@@ -172,18 +179,18 @@ def uncurtailed_record(net, cfg, idx, limits_a) -> dict:
     return record
 
 
-def _search(net, cfg, idx, limits_a, units, plants, base_q, detail, scope, record) -> dict:
-    """The smallest pro-rata cut over `units` that clears `scope`, applied.
+def _search(net, cfg, idx, limits_a, units, plants, base_q, detail, record) -> dict:
+    """The smallest pro-rata cut over `units` that clears every actionable level.
 
-    `scope` is "all" (every actionable level) or "corridor" (export current
-    on the corridor only). Each trial cuts `units` from the dispatch they
-    entered with and puts every plant back on its entry reactive power, so a
-    trial is a pure function of the cut. Leaves the network at the cut found.
+    Each trial cuts every unit by the same fraction of the output it entered
+    with and puts every plant back on its entry reactive power, so a trial is
+    a pure function of the cut. Leaves the network at the cut found.
     """
     base_p = {u: float(net.sgen.at[idx.sgens[u], "p_mw"]) for u in units}
     total_p = sum(base_p.values())
-    out = {"cut": dict.fromkeys(units, 0.0), "trials": 0, "exit": "nothing_to_curtail",
-           "residual": 0.0, "result": None, "failed": False, "fleet_off": True}
+    out = {"cut": dict.fromkeys(units, 0.0), "fraction": 0.0, "trials": 0,
+           "exit": "nothing_to_curtail", "residual": 0.0, "result": None,
+           "failed": False, "fleet_off": True}
     if total_p <= 0.01:
         return out                  # a constraint binds with nothing left to cut
 
@@ -209,32 +216,17 @@ def _search(net, cfg, idx, limits_a, units, plants, base_q, detail, scope, recor
     # First guess from the linear structure of the violation: corridor current
     # and export both scale with injection, so the required cut is predictable
     # to within a factor rather than something to find by doubling from zero.
-    if scope == "corridor":
-        def margin(d):
-            return (d["groups"]["corridor"][1] - 100.0) / MARGIN_SCALE[3]
-
-        def cleared(level, d):
-            return d["groups"]["corridor"][1] <= 100.0
-
-        excess = detail["groups"]["corridor"][1] - 100.0
-        guesses = [total_p * excess / (100.0 + excess)] if excess > 0 else []
-    else:
-        margin = feasibility_margin
-
-        def cleared(level, d):
-            return level == 0
-
-        margins = detail["margins"]
-        guesses = []
-        if margins[3] > 0:
-            guesses.append(total_p * margins[3] / (100.0 + margins[3]))
-        if margins[4] > 0:
-            guesses.append(margins[4])
-        if margins[1] > 0:
-            guesses.append(total_p * 0.10)
+    margins = detail["margins"]
+    guesses = []
+    if margins[3] > 0:
+        guesses.append(total_p * margins[3] / (100.0 + margins[3]))
+    if margins[4] > 0:
+        guesses.append(margins[4])
+    if margins[1] > 0:
+        guesses.append(total_p * 0.10)
     cut = min(total_p, max(RESOLUTION_MW, max(guesses) if guesses else 5.0))
 
-    lo, g_lo = 0.0, margin(detail)          # the entry state, violating
+    lo, g_lo = 0.0, feasibility_margin(detail)     # the entry state, violating
     hi, g_hi = None, None
     exit_reason = "trial_budget"
 
@@ -246,8 +238,8 @@ def _search(net, cfg, idx, limits_a, units, plants, base_q, detail, scope, recor
             lo, g_lo = cut, max(g_lo, 1.0)
         else:
             trial_level, _, _, trial_detail = result
-            g = margin(trial_detail)
-            if cleared(trial_level, trial_detail):
+            g = feasibility_margin(trial_detail)
+            if trial_level == 0:
                 hi, g_hi = cut, g
             else:
                 lo, g_lo = cut, g
@@ -282,6 +274,7 @@ def _search(net, cfg, idx, limits_a, units, plants, base_q, detail, scope, recor
     fraction = min(1.0, applied / total_p) if total_p > 0 else 0.0
     out.update({
         "cut": {u: base_p[u] * fraction for u in units},
+        "fraction": fraction,
         "exit": exit_reason,
         "residual": (hi - lo) if hi is not None else 0.0,
         "result": result,
@@ -293,12 +286,8 @@ def _search(net, cfg, idx, limits_a, units, plants, base_q, detail, scope, recor
 def curtail(net, cfg, idx, limits_a) -> dict:
     """Apply the smallest pro-rata cut that clears every actionable violation.
 
-    Normally one search over the plants that relieve what binds. When a
-    corridor overload binds together with a limit everyone shares, such as the
-    export cap, and some plants sit downstream of the overload, it takes two:
-    the plants upstream relieve the corridor first, then whatever still binds
-    is shared by everyone. A downstream plant is never cut for current it
-    does not put through the corridor.
+    One search over the plants that relieve what binds, all cut by the same
+    share of their instantaneous output.
     """
     record = default_record(cfg)
     level, element, magnitude, detail = scan(net, idx, limits_a, cfg)
@@ -316,43 +305,26 @@ def curtail(net, cfg, idx, limits_a) -> dict:
 
     plants = curtailable(cfg)
     base_q = {u: float(net.sgen.at[idx.sgens[u], "q_mvar"]) for u in plants}
-    shared = relieving_units(cfg, detail)
-    upstream = upstream_of_overload(cfg, detail)
-    stages = ["all"]
-    if upstream is not None and len(upstream) < len(plants) and shared == plants:
-        stages = ["corridor", "all"]
+    units = relieving_units(cfg, detail)
+    out = _search(net, cfg, idx, limits_a, units, plants, base_q, detail, record)
+    if out["failed"]:
+        record.update({"ok": False, "curtail_exit": "solve_failure", "feasible": False,
+                       "curtail_trials": out["trials"]})
+        return record
+    if out["result"] is not None:
+        level, element, magnitude, detail = out["result"]
 
-    cut = dict.fromkeys(plants, 0.0)
-    state = (level, element, magnitude, detail)
-    trials, out = 0, None
-    for scope in stages:
-        if scope == "all" and out is not None:
-            if state[0] == 0:
-                break                       # the corridor stage cleared everything
-            shared = relieving_units(cfg, state[3])
-        units = upstream if scope == "corridor" else shared
-        out = _search(net, cfg, idx, limits_a, units, plants, base_q, state[3], scope, record)
-        trials += out["trials"]
-        if out["failed"]:
-            record.update({"ok": False, "curtail_exit": "solve_failure", "feasible": False,
-                           "curtail_trials": trials})
-            return record
-        for unit, mw in out["cut"].items():
-            cut[unit] += mw
-        if out["result"] is not None:
-            state = out["result"]
-
-    level, element, magnitude, detail = state
-    for unit in plants:
-        record[f"curtailed_{unit}_mw"] = cut[unit]
+    for unit, mw in out["cut"].items():
+        record[f"curtailed_{unit}_mw"] = mw
     record.update({
-        "curtail_trials": trials,
+        "curtail_trials": out["trials"],
         "curtail_exit": out["exit"],
         "curtail_residual_mw": out["residual"],
+        "curtail_fraction": out["fraction"],
         "feasible": level == 0,
         "binding_after": f"L{level}:{element}" if level else "none",
         "margin_after": magnitude if level else 0.0,
-        "curtailed_total_mw": sum(cut.values()),
+        "curtailed_total_mw": sum(out["cut"].values()),
     })
     _record_scan(record, detail, "after")
     record["residual_class"] = classify_residual(level, record["feasible"], out["fleet_off"])

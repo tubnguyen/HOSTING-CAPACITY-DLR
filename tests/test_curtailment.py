@@ -133,23 +133,55 @@ def test_a_plant_downstream_of_the_overload_is_not_cut_for_it():
     assert net.sgen.at[idx.sgens["WF_4"], "p_mw"] == pytest.approx(48.0)
 
 
-def test_a_shared_limit_left_after_the_corridor_is_shared_by_every_plant():
-    """Corridor first by the plants upstream, then the export cap by everyone."""
+def _shares(record, net, idx, units):
+    """Share of its entry output each unit gave up."""
+    return {u: record[f"curtailed_{u}_mw"]
+            / (record[f"curtailed_{u}_mw"] + float(net.sgen.at[idx.sgens[u], "p_mw"]))
+            for u in units}
+
+
+def test_every_plant_cut_gives_up_the_same_share_of_its_output():
+    """Curtailment is proportional to each plant's instantaneous output."""
+    cfg, net, idx = _with_added(added_der=["wind:60@SUB_C"])
+    record = curtail(net, cfg, idx, {"Z1": 300.0, "Z2": 300.0})
+    assert record["feasible"] and record["curtail_fraction"] > 0.0
+    shares = _shares(record, net, idx, cfg.units)
+    assert list(shares.values()) == pytest.approx([record["curtail_fraction"]] * len(shares))
+    assert record["curtailed_WF_2_mw"] == pytest.approx(66.0 * record["curtail_fraction"])
+
+
+def test_when_a_shared_limit_binds_too_every_plant_gives_up_the_same_share():
+    """Corridor and export cap together: the PCC plant is behind the cap."""
     cfg, net, idx = _with_added(added_der=["wind:60@PCC"], export_cap_mw=60.0)
     limits = {"Z1": 400.0, "Z2": 400.0}
     level, _, _, detail = scan(net, idx, limits, cfg)
     assert detail["levels"][3] is not None and detail["levels"][4] is not None
     record = curtail(net, cfg, idx, limits)
     assert record["feasible"], record["binding_after"]
-    assert record["curtailed_WF_4_mw"] > 0.0, "the export cap is everyone's"
-    # Pro rata over every plant in the second stage only, so the PCC plant
-    # gives up a smaller share of its output than the plants behind the corridor.
-    share = {u: record[f"curtailed_{u}_mw"] / (record[f"curtailed_{u}_mw"]
-                                               + float(net.sgen.at[idx.sgens[u], "p_mw"]))
-             for u in ("WF_1", "WF_4")}
-    assert share["WF_4"] < share["WF_1"]
+    shares = _shares(record, net, idx, cfg.units)
+    assert list(shares.values()) == pytest.approx([record["curtail_fraction"]] * len(shares))
     total = sum(record[f"curtailed_{u}_mw"] for u in cfg.units)
     assert record["curtailed_total_mw"] == pytest.approx(total)
+
+
+def test_a_large_load_takes_generation_before_anything_is_cut():
+    """Power a load draws between the plants and the bottleneck never reaches it."""
+    limits = {"Z1": 500.0, "Z2": 500.0}
+    cut = {}
+    for name, loads in (("without", []), ("with", ["60@MID_A_C"])):
+        cfg, net, idx = _with_added(added_loads=loads)
+        cut[name] = curtail(net, cfg, idx, limits)["curtailed_total_mw"]
+        assert scan(net, idx, limits, cfg)[0] == 0
+    assert cut["without"] > 0.0
+    # The load sits upstream of TAP_W -> SUB_C, the segment carrying every
+    # plant, so it takes about its own demand off what has to be cut.
+    assert cut["without"] - cut["with"] == pytest.approx(60.0, abs=8.0)
+
+
+def test_a_load_that_absorbs_the_excess_leaves_nothing_to_cut():
+    cfg, net, idx = _with_added(added_loads=["120@MID_A_C"])
+    record = curtail(net, cfg, idx, {"Z1": 500.0, "Z2": 500.0})
+    assert record["curtailed_total_mw"] == 0.0 and record["curtail_exit"] == "not_needed"
 
 
 def test_an_overload_drawn_by_load_is_not_curtailed():

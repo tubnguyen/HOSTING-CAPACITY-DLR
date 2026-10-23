@@ -76,13 +76,22 @@ load at SUB_A leaves the busbar near 0.86 pu, and somewhere between 130 and 140 
 the power flow has no solution at all. Steps beyond what the network can supply do
 not converge, and are counted as such.
 
-**Where it connects decides what it is curtailed for.** A plant is only cut for a
-corridor overload if its power flows through the overloaded segment, that is if it
-joins at or upstream of the segment's head-side end. A plant at the PCC never is; it
-still shares the export cap, an over-voltage or a transformer overload with everyone.
-A segment overloaded by power drawn back toward the head, to supply a large load up
-the corridor, is recorded but not curtailed for: cutting generation would only
-deepen it.
+**Where it connects decides what it is curtailed for.** Curtailment is proportional
+to instantaneous output: every plant cut in a step gives up the same share of what it
+is producing. A plant is only in that share for a corridor overload if its power
+flows through the overloaded segment, that is if it joins at or upstream of the
+segment's head-side end; a plant at the PCC is not. When the export cap, an
+over-voltage or a transformer overload binds in the same step, every plant shares
+the cut.
+
+**A large load absorbs generation before anything is cut.** The cut is searched on
+the solved network, so power a load draws between the plants and the bottleneck
+never reaches the bottleneck: a 60 MW load at MID_A_C takes about 60 MW off the
+curtailment a TAP_W → SUB_C overload needs, and a load large enough to use the whole
+excess leaves nothing to cut. A load beyond the bottleneck (at the PCC, say) relieves
+the export cap but not the corridor. A segment overloaded by power drawn back toward
+the head, to supply a large load up the corridor, is recorded but not curtailed for:
+cutting generation would only deepen it.
 
 Added plants also widen the reactive exchange window at the PCC, which is set by the
 installed fleet: 10 % of 330 MW plus what was added, at most 50 MVAr.

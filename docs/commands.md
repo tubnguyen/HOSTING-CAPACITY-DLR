@@ -126,6 +126,11 @@ simulated result, and there is no cost figure to redraw.
 A bad flag or a dataset that does not cover the window exits with code 2 and a
 one-line message.
 
+The power flow tries several starting points when a step is hard to solve. A start
+that diverges is expected and is not reported on the console; a step that no start
+solves is counted under "Steps that did not converge" in the summary's `CHECKS`
+table.
+
 ### Presets
 
 21 presets, named `<rating>_der<n>[_bess]`:

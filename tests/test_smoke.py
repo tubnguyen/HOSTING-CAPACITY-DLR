@@ -265,14 +265,28 @@ def test_a_run_with_added_plants_and_loads_converges_and_balances(added_run):
     assert "i_CORR_PV_W_a" not in result.columns and "v_MID_C_PCC_pu" in result.columns
 
 
-def test_a_plant_at_the_pcc_is_never_cut_for_the_corridor(added_run):
+def test_a_plant_at_the_pcc_is_not_cut_when_the_corridor_alone_binds(added_run):
     _, _, _, result = added_run
-    corridor = result["curtail_cause"] == "corridor"
-    assert corridor.any(), "the window has to curtail for the corridor to test this"
-    assert result.loc[corridor, "curtailed_WF_1_mw"].sum() > 0.0
-    assert result.loc[corridor, "curtailed_WF_4_mw"].sum() == 0.0
+    alone = ((result["curtail_cause"] == "corridor")
+             & ~result["binding_all_before"].str.contains("L4|L1", regex=True))
+    assert alone.any(), "the window has to curtail for the corridor alone to test this"
+    assert result.loc[alone, "curtailed_WF_1_mw"].sum() > 0.0
+    assert result.loc[alone, "curtailed_WF_4_mw"].sum() == 0.0
     assert (result["i_Z1_a"] <= result["rating_Z1_a"] + 1.0).all()
     assert (result["i_Z2_a"] <= result["rating_Z2_a"] + 1.0).all()
+
+
+def test_every_plant_cut_gives_up_the_same_share_of_its_output(added_run):
+    """Proportional to instantaneous output, step by step."""
+    cfg, _, _, result = added_run
+    cut = result[result["curtailed_total_mw"] > 0]
+    assert len(cut), "the window has to curtail to test this"
+    for unit in cfg.units:
+        available = cut[f"available_{unit}_mw"]
+        curtailed = cut[f"curtailed_{unit}_mw"]
+        taken = curtailed > 0
+        share = curtailed[taken] / available[taken]
+        assert share.to_numpy() == pytest.approx(cut.loc[taken, "curtail_fraction"].to_numpy())
 
 
 def test_a_run_with_added_items_writes_every_output(added_run):
