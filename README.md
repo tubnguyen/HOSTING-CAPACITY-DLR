@@ -18,8 +18,9 @@ Power flow analysis by simulates a period of a 110 kV generation heavy corridor 
   records which limit bound at every step.
 * **Voltage control** by tap changers, a shunt reactor and Q(V) droop.
 * **Constraint checks** for over-voltage, under-voltage, thermal overload and the export cap.
-* **Minimal curtailment**: proportional curtailment wherever DLR cannot help, shared
-  only by the plants whose power flows through the overloaded segment.
+* **Minimal curtailment** wherever DLR cannot help: every plant cut gives up the same
+  share of its instantaneous output, and only plants feeding the constraint are cut.
+  A large load takes the generation it can use before anything is curtailed.
 * **Battery** (optional) with state of charge and reserve accounting.
 * **Added plants and large loads** of any size, wind or solar, at five connection
   points along the corridor: SUB_A, midway to SUB_C, SUB_C, midway to the PCC, or the PCC.

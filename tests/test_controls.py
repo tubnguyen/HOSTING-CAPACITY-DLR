@@ -142,6 +142,24 @@ def test_solve_reports_failure_without_the_deep_path(solved):
     assert solve(net, "results")
 
 
+def test_a_diverging_start_prints_nothing(cfg, reactor_state):
+    """Every plant at full output with no reactive support diverges from a cold
+    start, and pandapower then warns on every Newton-Raphson iteration. The
+    fallback solves the step, so the warnings are noise and are kept off the
+    console."""
+    import warnings
+    net, buses = nw.build(cfg)
+    idx = NetIndex.build(net, buses)
+    for unit in ("WF_1", "WF_2", "WF_3", "PV_1"):
+        net.sgen.at[idx.sgens[unit], "p_mw"] = C.DER_RATING_MW[unit]
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        result = regulate(net, cfg, idx, dict(C.DER_RATING_MW), reactor_state,
+                          warm_start=False)
+    assert result["ok"], "the fallback still solves the step"
+    assert not caught, [str(w.message) for w in caught]
+
+
 # ── Reactive exchange at the interface ───────────────────────────────────────
 def test_import_is_the_negative_of_export(solved):
     """The guard watches import; the measurement is signed for export.

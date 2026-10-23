@@ -85,6 +85,7 @@ flag, a count or a name (`converged`, `curtail_trials`, `rating_Z1_binding`).
 | `qc_Z1_wm`, `qr_Z1_wm`, `qs_Z1_wm` | the IEEE 738 heat terms per metre: convection, radiation, solar gain |
 | `phi_Z1_deg`, `wind_Z1_ms` | wind angle to the conductor, and the cooling wind speed at it |
 | `converged`, `reg_*`, `curtail_*`, `viol_L1`…`viol_L4` | solver, control loop, curtailment and violation diagnostics |
+| `curtail_fraction` | the share of its instantaneous output every curtailed plant gave up at this step, 0 to 1; `curtailed_<plant>_mw` is this times `available_<plant>_mw` for each plant cut |
 | `viol_L3_import` | a corridor segment overloaded by power drawn back toward the head for a large load; counted in `viol_L3` too, but never curtailed for (`curtail_exit` `load_driven`, `residual_class` `drawn_by_load`) |
 
 ## Summary tables

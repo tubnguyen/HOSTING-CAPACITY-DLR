@@ -41,7 +41,7 @@
 | [`test_dlr.py`](../tests/test_dlr.py) | The IEEE 738 model: static calibration, forward/inverse agreement, ceilings. |
 | [`test_controls.py`](../tests/test_controls.py) | Droop, move budgets, the reactor guard and the reactive power sign conventions. |
 | [`test_constraints.py`](../tests/test_constraints.py) | Each constraint level is detected and under-voltage never hides another violation. |
-| [`test_curtailment.py`](../tests/test_curtailment.py) | Curtailment clears violations, is close to minimal and is shared pro rata. |
+| [`test_curtailment.py`](../tests/test_curtailment.py) | Curtailment clears violations, is close to minimal, takes the same share of every plant's output, and leaves alone what a large load absorbs. |
 | [`test_storage.py`](../tests/test_storage.py) | Battery efficiency, state-of-charge limits and reserve shortfall. |
 | [`test_report.py`](../tests/test_report.py) | Metrics, technical cost, summary tables and text are computed correctly. |
 | [`test_reference.py`](../tests/test_reference.py) | The static reference is found only when settings, window, data and model all match. |

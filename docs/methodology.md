@@ -62,15 +62,18 @@ All four are checked every step.
 
 ## 4. Curtailment
 
-* Total MW curtailed, shared pro rata across the plants that relieve what binds.
-* Over-voltage, the export cap and transformer overloads are shared by every plant.
-* A corridor overload is shared only by the plants whose power flows through the
+* Proportional to instantaneous output: every plant cut in a step gives up the same
+  share of what it is producing at that moment, recorded as `curtail_fraction`. A
+  plant producing twice as much is cut twice as many megawatts.
+* The cut is the smallest that clears every actionable violation, searched on the
+  solved network, so loads are already accounted for: what a large load draws
+  between the plants and the bottleneck never reaches it, and only the excess the
+  network cannot carry and the load cannot use is curtailed.
+* Over-voltage, the export cap and transformer overloads are shared by every plant,
+  and so is any step in which one of them binds.
+* A corridor overload alone is shared by the plants whose power flows through the
   overloaded segment: those joining at or upstream of its head-side end. A plant
   connected further along, at the PCC for one, is not cut for it.
-* When a corridor overload and a shared limit bind together, the corridor is
-  relieved first by the plants upstream of it, then whatever still binds is shared
-  by everyone. With the four built-in plants the binding segment carries all of
-  them, so it is one search, as it always was.
 * A segment overloaded by power drawn back toward the head, for a large load up
   the corridor, is recorded but never curtailed for: cutting generation deepens it.
 * Every curtailed MWh is assigned to one cause.

@@ -21,6 +21,7 @@ reference, and that must not be reported as converged.
 from __future__ import annotations
 
 import math
+import warnings
 from dataclasses import dataclass, field
 
 import pandapower as pp
@@ -77,11 +78,27 @@ except ImportError:
     _NUMBA = False
 
 
+try:
+    from scipy.sparse.linalg import MatrixRankWarning
+except ImportError:                     # scipy comes with pandapower; this is a guard
+    MatrixRankWarning = RuntimeWarning
+
+# What a diverging Newton-Raphson start prints: the voltages turn to NaN, the
+# Jacobian goes singular, and both warnings repeat on every remaining
+# iteration. A start that diverges is expected - solve() falls back to the
+# next one, and a step none of them solves is counted as not converged - so
+# the warnings say nothing the result does not, and are kept off the console.
+_DIVERGENCE_WARNINGS = (RuntimeWarning, MatrixRankWarning)
+
+
 def _runpp(net, init) -> bool:
     try:
-        pp.runpp(net, algorithm="nr", init=init, calculate_voltage_angles=True,
-                 enforce_q_lims=False, max_iteration=50, tolerance_mva=1e-6,
-                 numba=_NUMBA)
+        with warnings.catch_warnings():
+            for category in _DIVERGENCE_WARNINGS:
+                warnings.simplefilter("ignore", category)
+            pp.runpp(net, algorithm="nr", init=init, calculate_voltage_angles=True,
+                     enforce_q_lims=False, max_iteration=50, tolerance_mva=1e-6,
+                     numba=_NUMBA)
     except Exception:
         return False
     return not net.res_bus["vm_pu"].isna().any()
