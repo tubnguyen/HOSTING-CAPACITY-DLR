@@ -130,3 +130,26 @@ def test_duplicate_timestamps_are_an_error(tmp_path):
 def test_missing_file_names_the_remedy(tmp_path):
     with pytest.raises(FileNotFoundError, match="generate.py"):
         dataio._read(tmp_path / "weather.csv")
+
+
+def test_added_plants_follow_the_shipped_profiles_scaled_to_their_rating():
+    from corridor_sim import ders
+    cfg = build_config(start="2024-06-01", days=2, added_der=["solar:30@PCC", "wind:108@SUB_C"])
+    inputs = dataio.load_inputs(cfg)
+    available = inputs["available"]
+    assert list(available.columns) == list(cfg.units)
+    assert available["PV_2"].to_numpy() == pytest.approx(available["PV_1"].to_numpy() * 0.5)
+    # An added farm the size of WF_2, which sees the reference wind unscaled,
+    # is WF_2 to within the rounding of the dispatch.
+    assert available["WF_4"].to_numpy() == pytest.approx(available["WF_2"].to_numpy(),
+                                                         abs=1e-3)
+    small = ders.added_farm_dispatch(inputs["weather"], 12.0)
+    assert (small <= 12.0).all() and small.max() > 0.0
+
+
+def test_the_data_coverage_is_the_window_every_file_spans():
+    first, end = dataio.coverage(build_config().data_dir)
+    assert first == pd.Timestamp("2024-01-01", tz="UTC")
+    assert end == pd.Timestamp("2025-01-01", tz="UTC")
+    full = build_config(start=f"{first:%Y-%m-%d}", days=int((end - first).days))
+    assert dataio.simulation_index(full)[-1] < end

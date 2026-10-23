@@ -6,15 +6,16 @@
 |---|---|
 | [`__init__.py`](../src/corridor_sim/__init__.py) | Package marker and version number. |
 | [`cli.py`](../src/corridor_sim/cli.py) | The `corridor-sim` command. `run_scenario()` builds, simulates, reports and plots one scenario, and on request its static reference alongside. |
-| [`config.py`](../src/corridor_sim/config.py) | The immutable `Config` holding every run setting, the 21 presets, validation and the command-line parser. |
+| [`interactive.py`](../src/corridor_sim/interactive.py) | Interactive mode: asks for the scenario question by question, checks every answer against its options, and prints the equivalent command. |
+| [`config.py`](../src/corridor_sim/config.py) | The immutable `Config` holding every run setting, added plants and loads, the 21 presets, validation, the command-line parser and its inverse `to_argv`. |
 | [`constants.py`](../src/corridor_sim/constants.py) | Every network and physical parameter: voltages, conductor data, line lengths, plant sizes, transformers, control settings, limits. Edit this for your own network. |
-| [`network.py`](../src/corridor_sim/network.py) | Builds the pandapower model of the corridor; topology is one readable function. |
+| [`network.py`](../src/corridor_sim/network.py) | Builds the pandapower model of the corridor, with any added plants, loads and midpoint connections; topology is one readable function. |
 | [`dataio.py`](../src/corridor_sim/dataio.py) | Reads the four input CSVs, checks they cover the window, and interpolates them onto the 15-minute grid. |
-| [`ders.py`](../src/corridor_sim/ders.py) | Turns the weather into wind farm output: hub-height wind, air density, a 6 MW power curve, wake losses. |
+| [`ders.py`](../src/corridor_sim/ders.py) | Turns the weather into wind farm output, for the built-in farms and added ones: hub-height wind, air density, a 6 MW power curve, wake losses. |
 | [`dlr.py`](../src/corridor_sim/dlr.py) | IEEE 738 line rating, forward (ampacity) and inverse (conductor temperature), plus the cap and equipment ceilings. |
 | [`controls.py`](../src/corridor_sim/controls.py) | Per-step voltage control: shunt reactor, tap changer and plant Q(V) droop, plus the robust power-flow solve. |
 | [`constraints.py`](../src/corridor_sim/constraints.py) | Scans the four constraint levels (over-voltage, under-voltage, thermal, export cap) and measures PCC export. |
-| [`curtailment.py`](../src/corridor_sim/curtailment.py) | Finds the smallest pro-rata generation cut that clears every actionable violation. |
+| [`curtailment.py`](../src/corridor_sim/curtailment.py) | Finds the smallest pro-rata generation cut that clears every actionable violation, shared by the plants that relieve it. |
 | [`storage.py`](../src/corridor_sim/storage.py) | Battery dispatch, state of charge and reserve accounting. |
 | [`simulate.py`](../src/corridor_sim/simulate.py) | The 15-minute time loop that ties everything together and records one row per step. |
 | [`reference.py`](../src/corridor_sim/reference.py) | The static-rating run a DLR run is compared against: its settings, fingerprint and lookup for reuse. |
@@ -45,4 +46,5 @@
 | [`test_report.py`](../tests/test_report.py) | Metrics, technical cost, summary tables and text are computed correctly. |
 | [`test_reference.py`](../tests/test_reference.py) | The static reference is found only when settings, window, data and model all match. |
 | [`test_matrix.py`](../tests/test_matrix.py) | The matrix runner collects and tabulates results, and pairs DLR runs with static ones. |
-| [`test_smoke.py`](../tests/test_smoke.py) | Short end-to-end runs: convergence, energy balance, ratings respected, files written, static reference made then reused. |
+| [`test_interactive.py`](../tests/test_interactive.py) | Interactive mode: answers become the right run, unmatched answers are asked again, defaults and cancelling. |
+| [`test_smoke.py`](../tests/test_smoke.py) | Short end-to-end runs: convergence, energy balance, ratings respected, files written, static reference made then reused, added plants and loads. |

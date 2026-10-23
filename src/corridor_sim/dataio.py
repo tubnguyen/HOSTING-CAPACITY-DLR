@@ -43,6 +43,18 @@ def _read(path: Path) -> pd.DataFrame:
     return df.sort_index()
 
 
+def coverage(data_dir) -> tuple[pd.Timestamp, pd.Timestamp]:
+    """The window every input file covers, as (first start, last end).
+
+    The end is exclusive, like a run's: the last 15-minute step of a window
+    ending there is the last timestamp all four files reach.
+    """
+    spans = [_read(Path(data_dir) / name).index for name in FILES.values()]
+    first = max(span[0] for span in spans)
+    last = min(span[-1] for span in spans)
+    return first, last + pd.Timedelta(hours=C.DT_H)
+
+
 # Alignment and the coverage rule it enforces live in dlr.align_to_index, so
 # the rating weather and every other input are held to exactly the same rule.
 _align = dlr.align_to_index
@@ -64,6 +76,27 @@ def load_inputs(cfg) -> dict:
     }
     pv = _align(raw["pv"], index, "pv_generation.csv")["p_ac_mw"]
     inputs["pv"] = pv.clip(0.0, C.DER_RATING_MW["PV_1"])
+    inputs["available"] = available_power(cfg, weather_15, inputs["wind"], pv)
     inputs["rating_weather"] = (dlr.prepare_weather(cfg, raw["weather"], index)
                                 if cfg.dlr_mode > 0 else None)
     return inputs
+
+
+def available_power(cfg, weather: pd.DataFrame, wind: pd.DataFrame,
+                    pv: pd.Series) -> pd.DataFrame:
+    """Output [MW] each unit could deliver at each step, before curtailment.
+
+    The built-in plants keep their own series. An added wind farm is modelled
+    from the weather like the built-in ones; an added solar plant follows the
+    solar file scaled from PV_1's rating to its own, since the file is the
+    output of one plant rather than a resource.
+    """
+    out = pd.DataFrame(index=weather.index)
+    for unit in ("WF_1", "WF_2", "WF_3"):
+        out[unit] = wind[unit]
+    out["PV_1"] = pv.clip(0.0, C.DER_RATING_MW["PV_1"])
+    per_unit_pv = (pv / C.DER_RATING_MW["PV_1"]).clip(0.0, 1.0)
+    for plant in cfg.added_der:
+        out[plant.name] = (ders.added_farm_dispatch(weather, plant.mw) if plant.kind == "wind"
+                           else per_unit_pv * plant.mw)
+    return out

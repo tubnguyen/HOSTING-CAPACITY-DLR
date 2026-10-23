@@ -21,10 +21,10 @@ from . import constants as C
 from . import curtailment, dlr, storage
 from .constraints import corridor_losses_mw, measure_pcc_export, scan, violation_flags
 from .controls import NetIndex, regulate, solve
-from .network import CORRIDOR_ZONES, DSO_TRAFO_NAMES, EXPORT_PATH_LINES, HV_BUSES, PLANT_TRAFOS
+from .network import CORRIDOR_ZONES, DSO_TRAFO_NAMES, EXPORT_PATH_LINES, PLANT_TRAFOS
 
-DER_UNITS = ("WF_1", "WF_2", "WF_3", "PV_1")
-REPORT_BUSES = HV_BUSES + ["SUB_A_MV", "SUB_B_MV"]
+DER_UNITS = ("WF_1", "WF_2", "WF_3", "PV_1")        # the built-in plants
+MV_REPORT_BUSES = ["SUB_A_MV", "SUB_B_MV"]
 
 
 def _line_value(net, idx, name, field):
@@ -49,26 +49,31 @@ def _zone_current(net, idx, zone):
 def collect_row(net, cfg, idx, reg: dict) -> dict:
     """Network state after a converged step."""
     row = {}
-    for name in REPORT_BUSES:
+    for name in idx.hv_buses + MV_REPORT_BUSES:
         row[f"v_{name}_pu"] = float(net.res_bus.at[idx.buses[name], "vm_pu"])
 
-    for unit in DER_UNITS:
+    for unit in cfg.units:
         s_idx = idx.sgens[unit]
         row[f"p_{unit}_mw"] = float(net.res_sgen.at[s_idx, "p_mw"])
         row[f"q_{unit}_mvar"] = float(net.res_sgen.at[s_idx, "q_mvar"])
         row[f"q_ref_{unit}_mvar"] = reg["q_ref"].get(unit, 0.0)
 
-    row["p_der_total_mw"] = sum(row[f"p_{u}_mw"] for u in DER_UNITS)
-    row["q_der_total_mvar"] = sum(row[f"q_{u}_mvar"] for u in DER_UNITS)
+    row["p_der_total_mw"] = sum(row[f"p_{u}_mw"] for u in cfg.units)
+    row["q_der_total_mvar"] = sum(row[f"q_{u}_mvar"] for u in cfg.units)
     row["p_load_total_mw"] = float(net.res_load["p_mw"].sum())
     row["q_load_total_mvar"] = float(net.res_load["q_mvar"].sum())
+    for load in cfg.added_loads:
+        row[f"p_{load.name}_mw"] = float(net.res_load.at[idx.loads[load.name], "p_mw"])
+        row[f"q_{load.name}_mvar"] = float(net.res_load.at[idx.loads[load.name], "q_mvar"])
     row["loss_line_mw"] = float(net.res_line["pl_mw"].sum())
     row["loss_trafo_mw"] = float(net.res_trafo["pl_mw"].sum())
 
+    # Only the segments this network has: a split segment is two halves.
     for name in EXPORT_PATH_LINES:
-        row[f"i_{name}_a"] = _line_value(net, idx, name, "i_ka") * 1000.0
-        row[f"p_{name}_mw"] = _line_value(net, idx, name, "p_from_mw")
-    for name in DSO_TRAFO_NAMES + PLANT_TRAFOS:
+        if name in idx.lines:
+            row[f"i_{name}_a"] = _line_value(net, idx, name, "i_ka") * 1000.0
+            row[f"p_{name}_mw"] = _line_value(net, idx, name, "p_from_mw")
+    for name in DSO_TRAFO_NAMES + PLANT_TRAFOS + idx.added_trafos:
         row[f"loading_{name}_pct"] = _trafo_loading(net, idx, name)
 
     pcc = measure_pcc_export(net, idx.buses)
@@ -179,8 +184,6 @@ def run(cfg, net, buses, inputs, progress=True, label="") -> pd.DataFrame:
         raise RuntimeError(f"dlr_mode={cfg.dlr_mode} requires weather data")
 
     load = inputs["load"]
-    wind = inputs["wind"]
-    pv = inputs["pv"].to_numpy()
     activation = inputs["reserve"].to_numpy()
 
     p_a = load["p_sub_a_mw"].to_numpy()
@@ -190,7 +193,8 @@ def run(cfg, net, buses, inputs, progress=True, label="") -> pd.DataFrame:
     p_agg = load["p_agg_mw"].to_numpy()
     q_agg = load["q_agg_mvar"].to_numpy()
     q_cap = load["q_shunt_a_mvar"].to_numpy()
-    available = {u: (wind[u].to_numpy() if u != "PV_1" else pv) for u in DER_UNITS}
+    units = cfg.units
+    available = {u: inputs["available"][u].to_numpy() for u in units}
 
     reactor_state = dict.fromkeys(idx.reactors, C.REACTOR_STEP_INIT)
     soc_mwh = cfg.storage_soc_init * cfg.storage_e_mwh
@@ -213,14 +217,13 @@ def run(cfg, net, buses, inputs, progress=True, label="") -> pd.DataFrame:
         net.shunt.at[idx.shunts["CAP_SUB_A"], "q_mvar"] = -q_cap[i]
 
         dispatch = {}
-        for unit in DER_UNITS:
-            value = float(available[unit][i]) if cfg.der_enabled[unit] else 0.0
+        for unit in units:
+            value = float(available[unit][i]) if cfg.unit_enabled(unit) else 0.0
             dispatch[unit] = value if math.isfinite(value) else 0.0
             net.sgen.at[idx.sgens[unit], "p_mw"] = dispatch[unit]
-            mode = cfg.pv_mode if unit == "PV_1" else cfg.control_mode
             net.sgen.at[idx.sgens[unit], "q_mvar"] = (
                 cfg.cosphi_sign_factor * dispatch[unit] * C.TAN_PHI
-                if mode == "cosphi" else 0.0)
+                if cfg.unit_mode(unit) == "cosphi" else 0.0)
 
         phase1 = storage.phase1_intent(net, cfg, idx, float(activation[i]), soc_mwh)
         reg = regulate(net, cfg, idx, dispatch, reactor_state, warm_start=previous_ok)
@@ -289,7 +292,7 @@ def run(cfg, net, buses, inputs, progress=True, label="") -> pd.DataFrame:
         row["oltc_loop_moves"] = reg["oltc_moves_a"] + reg["oltc_moves_b"]
         row["reactor_loop_moves"] = reg["reactor_moves"]
         row["actuators_frozen"] = reg["oltc_frozen"] + reg["reactor_frozen"]
-        for unit in DER_UNITS:
+        for unit in units:
             row[f"available_{unit}_mw"] = dispatch[unit]
         row["available_total_mw"] = sum(dispatch.values())
         row["control_mode"] = cfg.control_mode
@@ -309,6 +312,7 @@ def run(cfg, net, buses, inputs, progress=True, label="") -> pd.DataFrame:
             row.update(violation_flags(detail))
         else:
             row.update({f"viol_L{n}": 0 for n in (1, 2, 3, 4)})
+            row["viol_L3_import"] = 0
 
         counters["not_converged"] += int(not ok)
         counters["curtail_failures"] += curtail_record["curtail_failures"]
@@ -338,7 +342,17 @@ def run(cfg, net, buses, inputs, progress=True, label="") -> pd.DataFrame:
     return result
 
 
+def units_in(result: pd.DataFrame) -> list:
+    """The generating units a result has columns for, built-in and added.
+
+    Read from the result rather than a configuration, so it holds for a
+    result loaded back from its saved time series as well.
+    """
+    return [c[len("available_"):-len("_mw")] for c in result.columns
+            if c.startswith("available_") and c.endswith("_mw") and c != "available_total_mw"]
+
+
 def realised_generation(result: pd.DataFrame) -> pd.Series:
     """Active power actually injected by the fleet, in MW."""
-    cols = [f"p_{u}_mw" for u in DER_UNITS if f"p_{u}_mw" in result.columns]
+    cols = [f"p_{u}_mw" for u in units_in(result) or DER_UNITS if f"p_{u}_mw" in result.columns]
     return result[cols].sum(axis=1) if cols else pd.Series(np.nan, index=result.index)

@@ -11,6 +11,11 @@ that order; L2 is recorded but never curtailed for, because reducing active
 power deepens an under-voltage on an inductive corridor. Scanning all four
 regardless means a non-actionable under-voltage can never mask a thermal or
 export violation happening at the same instant.
+
+A corridor segment can also be overloaded the other way: power drawn back
+toward the head to supply a large load connected up the corridor. Cutting
+generation deepens that overload rather than relieving it, so like L2 it is
+recorded (`viol_L3`, `viol_L3_import`) but never curtailed for.
 """
 from __future__ import annotations
 
@@ -21,7 +26,6 @@ from .network import (
     CORRIDOR_ZONES,
     DSO_TRAFO_NAMES,
     EXPORT_PATH_LINES,
-    HV_BUSES,
     PLANT_LINES,
     PLANT_TRAFOS,
 )
@@ -80,7 +84,7 @@ def scan(net, idx, limits_a: dict, cfg):
     margins = dict.fromkeys((1, 2, 3, 4), -float("inf"))
 
     # ── L1 / L2 voltage band ─────────────────────────────────────────────────
-    for name in HV_BUSES:
+    for name in idx.hv_buses:
         v = float(net.res_bus.at[idx.buses[name], "vm_pu"])
         over, under = v - C.V_MAX_PU, C.V_MIN_PU - v
         margins[1] = max(margins[1], over)
@@ -92,6 +96,8 @@ def scan(net, idx, limits_a: dict, cfg):
 
     # ── L3 thermal, split by who owns the asset ──────────────────────────────
     groups = {g: ("none", 0.0) for g in L3_GROUPS}
+    drawn = ("none", 0.0)           # worst segment carrying power toward the head
+    overloaded = []                 # corridor lines over their rating, carrying export
 
     for zone, names in CORRIDOR_ZONES.items():
         limit_a = limits_a[zone]
@@ -105,8 +111,14 @@ def scan(net, idx, limits_a: dict, cfg):
             # to a different standard than the transformers beside it.
             amps = float(net.res_line.at[line_idx, "i_ka"]) * 1000.0
             pct = 100.0 * amps / limit_a if limit_a > 0 else float("inf")
+            if name in EXPORT_PATH_LINES and float(net.res_line.at[line_idx, "p_from_mw"]) < 0:
+                if pct > drawn[1]:
+                    drawn = (name, pct)
+                continue
             if pct > groups["corridor"][1]:
                 groups["corridor"] = (name, pct)
+            if pct > 100.0:
+                overloaded.append(name)
 
     for name in DSO_TRAFO_NAMES:
         t_idx = idx.trafos.get(name)
@@ -121,7 +133,7 @@ def scan(net, idx, limits_a: dict, cfg):
             pct = float(net.res_line.at[line_idx, "loading_percent"])
             if pct > groups["plant"][1]:
                 groups["plant"] = (name, pct)
-    for name in PLANT_TRAFOS:
+    for name in PLANT_TRAFOS + idx.added_trafos:
         t_idx = idx.trafos.get(name)
         if t_idx is not None:
             pct = float(net.res_trafo.at[t_idx, "loading_percent"])
@@ -148,23 +160,49 @@ def scan(net, idx, limits_a: dict, cfg):
             if margins[4] > 0:
                 levels[4] = ("PCC_net", margins[4])
 
-    detail = {"levels": levels, "groups": groups, "margins": margins}
+    detail = {"levels": levels, "groups": groups, "margins": margins,
+              "drawn": drawn, "corridor_over": overloaded}
     for level in ACTIONABLE_LEVELS:
         if levels[level] is not None:
             return level, levels[level][0], levels[level][1], detail
     return 0, "none", 0.0, detail
 
 
+def drawn_overload(detail: dict) -> bool:
+    """Whether a corridor segment is overloaded by power drawn toward the head."""
+    return detail.get("drawn", ("none", 0.0))[1] > 100.0
+
+
 def violation_flags(detail: dict) -> dict:
-    """Independent per-level flags, so coincident violations stay visible."""
-    return {f"viol_L{i}": int(detail["levels"][i] is not None) for i in (1, 2, 3, 4)}
+    """Independent per-level flags, so coincident violations stay visible.
+
+    `viol_L3` counts a corridor overload in either direction; `viol_L3_import`
+    singles out the one drawn toward the head by load, which curtailment
+    cannot clear.
+    """
+    flags = {f"viol_L{i}": int(detail["levels"][i] is not None) for i in (1, 2, 3, 4)}
+    flags["viol_L3_import"] = int(drawn_overload(detail))
+    flags["viol_L3"] = int(flags["viol_L3"] or flags["viol_L3_import"])
+    return flags
 
 
 def format_levels(detail: dict) -> str:
-    """Compact record of every violated level, e.g. 'L2:SUB_A=0.012|L3:T_WF2_1=32.2'."""
+    """Compact record of every violated level, e.g. 'L2:SUB_A=0.012|L3:T_WF2_1=32.2'.
+
+    A corridor overload drawn toward the head is marked 'import'.
+    """
     parts = [f"L{i}:{hit[0]}={hit[1]:.4g}"
              for i in (1, 2, 3, 4) if (hit := detail["levels"][i]) is not None]
+    if drawn_overload(detail):
+        name, pct = detail["drawn"]
+        parts.append(f"L3:{name}={pct - 100.0:.4g}(import)")
     return "|".join(parts) if parts else "none"
+
+
+def worst_corridor(detail: dict) -> tuple:
+    """The most heavily loaded corridor segment, in whichever direction it carries."""
+    export, drawn = detail["groups"]["corridor"], detail.get("drawn", ("none", 0.0))
+    return drawn if drawn[1] > export[1] else export
 
 
 def feasibility_margin(detail: dict) -> float:

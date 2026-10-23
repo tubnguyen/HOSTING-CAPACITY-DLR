@@ -62,7 +62,17 @@ All four are checked every step.
 
 ## 4. Curtailment
 
-* Total MW curtailed, shared pro rata across the connected plants.
+* Total MW curtailed, shared pro rata across the plants that relieve what binds.
+* Over-voltage, the export cap and transformer overloads are shared by every plant.
+* A corridor overload is shared only by the plants whose power flows through the
+  overloaded segment: those joining at or upstream of its head-side end. A plant
+  connected further along, at the PCC for one, is not cut for it.
+* When a corridor overload and a shared limit bind together, the corridor is
+  relieved first by the plants upstream of it, then whatever still binds is shared
+  by everyone. With the four built-in plants the binding segment carries all of
+  them, so it is one search, as it always was.
+* A segment overloaded by power drawn back toward the head, for a large load up
+  the corridor, is recorded but never curtailed for: cutting generation deepens it.
 * Every curtailed MWh is assigned to one cause.
 
 ## 5. Battery
@@ -75,6 +85,12 @@ All four are checked every step.
 ## 6. Inputs
 
 Inputs of any resolution are interpolated onto the 15-minute grid.
+
+Added plants have no input file of their own. An added wind farm is modelled from
+`weather.csv` with the same turbine, hub height and losses as the built-in farms;
+an added solar plant follows `pv_generation.csv`, scaled from PV_1's 60 MW to its
+own rating. An added load is a constant demand. Each joins at one of five
+connection points; see [network.md](network.md#connection-points).
 
 ## 7. Reported currents and cost
 
@@ -92,7 +108,7 @@ Inputs of any resolution are interpolated onto the 15-minute grid.
   it says how far past the as-built conductor the generation reaches.
 * **Technical cost:** curtailed energy, network losses (all lines and
   transformers) and reactive energy exchanged at the PCC outside the ±33 MVAr
-  window. Priced at an energy price (curtailment, losses) and a reactive energy
+  window (10 % of the installed fleet, so wider with added plants, at most 50 MVAr). Priced at an energy price (curtailment, losses) and a reactive energy
   price; both are placeholders. Reported in the summary tables and the metrics,
   not as a figure.
 * **Static comparison (`--compare`):** the same run at the static rating, reused if

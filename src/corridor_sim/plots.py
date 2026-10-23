@@ -368,11 +368,15 @@ def corridor_segments(cfg, result: pd.DataFrame, path: Path):
     lines = [line for line in report.SEGMENTS if f"i_{line}_a" in ok.columns]
     mean_i = [float(ok[f"i_{line}_a"].mean()) for line in lines]
     max_i = [float(ok[f"i_{line}_a"].max()) for line in lines]
-    labels = [f"{report.SEGMENTS[line][0].replace(' to ', ' → ')}\n"
-              f"{report.SEGMENTS[line][1]:g} km, mean {ok[f'p_{line}_mw'].mean():.0f} MW"
+    # A midpoint connection splits a segment in two; past five segments the
+    # labels take a line per end and the figure widens, so none overlap.
+    crowded = len(lines) > 5
+    arrow, comma = (" →\n", "\n") if crowded else (" → ", ", ")
+    labels = [f"{report.SEGMENTS[line][0].replace(' to ', arrow)}\n"
+              f"{report.SEGMENTS[line][1]:g} km{comma}mean {ok[f'p_{line}_mw'].mean():.0f} MW"
               for line in lines]
 
-    fig, ax = plt.subplots(figsize=(10, 4.6))
+    fig, ax = plt.subplots(figsize=(max(10.0, 1.65 * len(lines)) if crowded else 10, 4.6))
     x = np.arange(len(lines))
     width = 0.22
     for offset, values, colour, name in ((-0.13, mean_i, AQUA, "Mean current"),
@@ -386,7 +390,7 @@ def corridor_segments(cfg, result: pd.DataFrame, path: Path):
     ax.set_xticks(x, labels)
     ax.set_ylim(0, max(max(max_i), report.TWIN_STATIC_A) * 1.15)
     _clean(ax, "Amperes", "Current along the corridor, after curtailment")
-    _legend_below(ax, ncols=2, pad=0.24)
+    _legend_below(ax, ncols=2, pad=0.34 if crowded else 0.24)
     fig.tight_layout()
     fig.savefig(path, bbox_inches="tight")
     plt.close(fig)
@@ -398,8 +402,11 @@ def voltage_timeseries(result: pd.DataFrame, path: Path):
     ok = result[result["converged"]]
     buses = [b for b in report.CORRIDOR_BUSES if f"v_{b}_pu" in ok.columns]
     fig, ax = plt.subplots(figsize=(10, 4.4))
-    for colour, bus in zip(SERIES, buses, strict=False):
-        ax.plot(ok.index, ok[f"v_{bus}_pu"], color=colour, lw=0.9, label=bus)
+    # A midpoint connection adds buses past the six colours; those repeat a
+    # colour dashed, so every bus keeps a line of its own.
+    for i, bus in enumerate(buses):
+        ax.plot(ok.index, ok[f"v_{bus}_pu"], color=SERIES[i % len(SERIES)], lw=0.9,
+                ls="-" if i < len(SERIES) else (0, (4, 2)), label=bus)
     _reference(ax, C.V_MAX_PU, f"Upper band {C.V_MAX_PU:g} pu")
     _reference(ax, C.V_MIN_PU, f"Lower band {C.V_MIN_PU:g} pu")
     values = ok[[f"v_{b}_pu" for b in buses]].to_numpy()

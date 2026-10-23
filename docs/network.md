@@ -32,7 +32,60 @@ graph LR
 * **Bearings:** each zone picks 0°, 30°, 45°, 60° or 90° (default 45° for both).
   Only matters for full-weather rating.
 * **Topology is fixed:** a disconnected plant is set to zero output, not removed,
-  so every scenario shares one network.
+  so every scenario shares one network. Added plants and loads are the exception:
+  they add what they need, below.
+
+## Connection points
+
+Added plants (`--add-der`) and large loads (`--add-load`) connect at one of five
+110 kV points along the corridor:
+
+| Point | From SUB_A | Where | Zone |
+|---|---|---|---|
+| `SUB_A` | 0 km | corridor head, where WF_3 joins | Z1 |
+| `MID_A_C` | 15 km | midway from SUB_A to SUB_C, inside TAP_PV → TAP_W | Z1 |
+| `SUB_C` | 30 km | substation between the two rating zones | Z1 / Z2 |
+| `MID_C_PCC` | 35.5 km | midway from SUB_C to the PCC, inside SUB_C → TAP_B | Z2 |
+| `PCC` | 41 km | grid interface, beyond the constrained corridor | — |
+
+A midpoint bus is only built while something connects to it. The segment it sits
+on is then built as two halves of the same conductor, named `<segment>_1` and
+`<segment>_2`:
+
+| Midpoint | Segment | Halves |
+|---|---|---|
+| `MID_A_C` | `CORR_PV_W`, 10 km | `CORR_PV_W_1` TAP_PV → MID_A_C, 5 km; `CORR_PV_W_2` MID_A_C → TAP_W, 5 km |
+| `MID_C_PCC` | `CORR_C_B`, 10 km | `CORR_C_B_1` SUB_C → MID_C_PCC, 5.5 km; `CORR_C_B_2` MID_C_PCC → TAP_B, 4.5 km |
+
+A study with nothing at a midpoint builds exactly the network it always did.
+
+## Added plants and loads
+
+| | Added plant | Added load |
+|---|---|---|
+| Names | `WF_4`, `WF_5`, … (wind), `PV_2`, `PV_3`, … (solar) | `LOAD_1`, `LOAD_2`, … |
+| Size | any rating up to 1000 MW | any demand up to 1000 MW |
+| Connection | own 110/33 kV step-up transformer `T_<name>`, 1.25 × rating MVA, 12 % impedance (as T_PV is to PV_1), on the 110 kV busbar of its point | straight on the 110 kV busbar |
+| Output or demand | wind: the 6 MW turbine curve on the shipped weather, as WF_1–WF_3, at site exposure 1.0; solar: `pv_generation.csv` scaled from PV_1's 60 MW to its rating | constant at its rating, unity power factor unless given (`80@SUB_C:0.95`) |
+| Reactive | cos φ 0.95 range, the same droop or cos φ control as the built-in plants (solar follows the solar setting), measured at its point | fixed by its power factor |
+| Curtailment | yes, see below | never |
+
+The upper bound is a guard against a mistyped number, not a network limit. The
+corridor is long and weak for demand at its far end: with no generation, a 100 MW
+load at SUB_A leaves the busbar near 0.86 pu, and somewhere between 130 and 140 MW
+the power flow has no solution at all. Steps beyond what the network can supply do
+not converge, and are counted as such.
+
+**Where it connects decides what it is curtailed for.** A plant is only cut for a
+corridor overload if its power flows through the overloaded segment, that is if it
+joins at or upstream of the segment's head-side end. A plant at the PCC never is; it
+still shares the export cap, an over-voltage or a transformer overload with everyone.
+A segment overloaded by power drawn back toward the head, to supply a large load up
+the corridor, is recorded but not curtailed for: cutting generation would only
+deepen it.
+
+Added plants also widen the reactive exchange window at the PCC, which is set by the
+installed fleet: 10 % of 330 MW plus what was added, at most 50 MVAr.
 
 ## Corridor conductor (Al/St 340/30)
 
@@ -74,7 +127,7 @@ Reactive range is cos φ 0.95 at rated power.
 |---|---|
 | Voltage band | 0.95 – 1.05 pu |
 | Export cap at the PCC | 250 MW |
-| Reactive exchange window | ±33 MVAr |
+| Reactive exchange window | ±33 MVAr (10 % of the installed fleet, at most 50 MVAr) |
 | Reactive import guard | 20 MVAr |
 | Grid impedance behind the PCC | 2.0 + j10.0 Ω |
 | MV tap-changer setpoint | 20.5 kV |

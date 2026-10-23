@@ -18,8 +18,13 @@ Power flow analysis by simulates a period of a 110 kV generation heavy corridor 
   records which limit bound at every step.
 * **Voltage control** by tap changers, a shunt reactor and Q(V) droop.
 * **Constraint checks** for over-voltage, under-voltage, thermal overload and the export cap.
-* **Minimal curtailment**: proportional curtailment wherever DLR cannot help.
+* **Minimal curtailment**: proportional curtailment wherever DLR cannot help, shared
+  only by the plants whose power flows through the overloaded segment.
 * **Battery** (optional) with state of charge and reserve accounting.
+* **Added plants and large loads** of any size, wind or solar, at five connection
+  points along the corridor: SUB_A, midway to SUB_C, SUB_C, midway to the PCC, or the PCC.
+* **Interactive setup**: run `corridor-sim` with no options and it asks for the
+  scenario question by question, then prints the equivalent command.
 
 A synthetic data year comes with the repository. 
 The weather, demand, wind farms and solar farms, and network are meant to be replaced with own data.
@@ -43,6 +48,13 @@ The weather, demand, wind farms and solar farms, and network are meant to be rep
     └──────────── zone Z1, 30 km ───────────┴──── zone Z2, 11 km ────┘
 ```
 
+Added plants and loads connect at one of five points, measured from SUB_A:
+
+```
+  SUB_A ──────── MID_A_C ──────── SUB_C ──── MID_C_PCC ──── PCC
+   0 km           15 km           30 km       35.5 km       41 km
+```
+
 Parameters: [docs/network.md](docs/network.md).
 
 ## Quick start
@@ -52,10 +64,20 @@ git clone https://github.com/tubnguyen/HOSTING-CAPACITY-DLR
 cd HOSTING-CAPACITY-DLR
 pip install -e ".[dev]"
 
+corridor-sim                                             # asks for the scenario, step by step
 corridor-sim --preset dlr2_der4_bess --days 3            # full-weather DLR, all plants, battery
 corridor-sim --preset dlr2_der4_bess --days 3 --compare  # the same, beside the static rating
+corridor-sim --dlr 2 --add-der wind:50@SUB_C --add-load 80@MID_A_C --days 7   # add a plant and a load
 python scripts/run_matrix.py --days 30 --jobs 8    # all 21 presets in parallel
 ```
+
+Run with no options in a terminal, `corridor-sim` asks which plants to connect,
+what to add and where, battery or not, the conductor, the rating mode and the
+window. Each question lists its options and a default (Enter takes it); an answer
+that matches no option is asked again. Before anything runs it prints the same run
+as a command, to repeat it without the questions. `corridor-sim -i --preset ...`
+asks too, offering the preset as the defaults.
+
 If ```corridor-sim``` does not work, try:
 ```bash
 python -m corridor_sim.cli --preset dlr2_der4_bess --days 3
@@ -85,7 +107,7 @@ Each run writes to `runs/<label>/`:
 
 | File | Contents |
 |---|---|
-| `<label>_summary.csv` | the summary as titled tables: headline, corridor current, power flow by segment, generation by plant, grid interface, voltage, transformer loading, technical cost, monthly (or period) means, current duration, checks, storage |
+| `<label>_summary.csv` | the summary as titled tables: headline, corridor current, power flow by segment, generation by plant, grid interface, added loads, voltage, transformer loading, technical cost, monthly (or period) means, current duration, checks, storage |
 | `<label>_timeseries.csv` | every quantity per step: flows, voltages, ratings and what bound them, the current before and after curtailment, conductor temperature, curtailment and its cause, tap and reactor operations |
 | `<label>_violations.csv` | every step still violating a limit after control |
 | `<label>_metrics.json` | every headline number, plus the run's full settings |
@@ -127,7 +149,8 @@ The matrix runner adds `matrix_summary.csv` and comparison figures.
 ## Limitations
 
 Planning study only: intact network (no N-1), no protection or
-stability, no sag calculation, one weather point per corridor. The shipped site is
+stability, no sag calculation, one weather point per corridor. Added loads are
+constant demand, with no flexibility to relieve the corridor. The shipped site is
 cold and windy, so it favours DLR more than a calmer site would.
 
 ## License

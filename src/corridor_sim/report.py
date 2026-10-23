@@ -35,9 +35,16 @@ import pandas as pd
 
 from . import constants as C
 from .config import to_record
-from .network import CORRIDOR_ZONES, DSO_TRAFO_NAMES, EXPORT_PATH_LINES, PLANT_TRAFOS
+from .network import (
+    CORRIDOR_ZONES,
+    DSO_TRAFO_NAMES,
+    EXPORT_PATH_LINES,
+    PLANT_TRAFOS,
+    SEGMENT_ENDS,
+    added_trafo_name,
+)
 from .reference import static_key
-from .simulate import DER_UNITS, realised_generation
+from .simulate import realised_generation
 
 RATING_METHODS = {0: "Static rating", 1: "Ambient-adjusted DLR", 2: "Full-weather DLR"}
 
@@ -49,16 +56,13 @@ TWIN = C.CONDUCTOR_OPTIONS["twin"]
 SINGLE_STATIC_A = SINGLE["max_i_ka"] * 1000.0
 TWIN_STATIC_A = TWIN["max_i_ka"] * 1000.0
 
-# Export path segments, head to grid interface, with their length.
-SEGMENTS = {
-    "CORR_A_PV": ("SUB_A to TAP_PV", C.LEN_CORR_A_PV),
-    "CORR_PV_W": ("TAP_PV to TAP_W", C.LEN_CORR_PV_W),
-    "CORR_W_C": ("TAP_W to SUB_C", C.LEN_CORR_W_C),
-    "CORR_C_B": ("SUB_C to TAP_B", C.LEN_CORR_C_B),
-    "CORR_B_PCC": ("TAP_B to PCC", C.LEN_CORR_B_PCC),
-}
+# Export path segments, head to grid interface, with their length. A segment
+# split by a midpoint connection appears as its two halves instead.
+SEGMENTS = {line: (f"{head} to {tail}",
+                   C.CORRIDOR_POSITION_KM[tail] - C.CORRIDOR_POSITION_KM[head])
+            for line, (head, tail) in SEGMENT_ENDS.items()}
 ZONE_OF = {line: zone for zone, lines in CORRIDOR_ZONES.items() for line in lines}
-CORRIDOR_BUSES = ["SUB_A", "TAP_PV", "TAP_W", "SUB_C", "TAP_B", "PCC"]
+CORRIDOR_BUSES = ["SUB_A", "TAP_PV", "MID_A_C", "TAP_W", "SUB_C", "MID_C_PCC", "TAP_B", "PCC"]
 VOLTAGE_BUSES = CORRIDOR_BUSES + ["SUB_E", "SUB_B", "SUB_A_MV", "SUB_B_MV"]
 TRANSFORMER_ROLES = {name: "distribution 110/20 kV" for name in DSO_TRAFO_NAMES}
 TRANSFORMER_ROLES.update({name: ("solar step-up" if name == "T_PV"
@@ -211,6 +215,12 @@ def metrics(cfg, result: pd.DataFrame) -> dict:
         "hours_over_export_cap": float((ok["pcc_p_mw"] > cfg.export_cap_mw).sum() * C.DT_H),
         "hours_voltage_high": float(ok["viol_L1"].sum() * C.DT_H),
         "hours_voltage_low": float(ok["viol_L2"].sum() * C.DT_H),
+        # Corridor overloaded by power drawn toward the head for a large load,
+        # which curtailing generation cannot clear.
+        "hours_corridor_drawn_by_load": (float(ok["viol_L3_import"].sum() * C.DT_H)
+                                         if "viol_L3_import" in ok.columns else 0.0),
+        "added_der_mw": cfg.added_der_mw,
+        "added_load_mw": cfg.added_load_mw,
         "losses_mwh": losses,
         "losses_line_mwh": losses_line,
         "losses_trafo_mwh": losses_trafo,
@@ -492,10 +502,17 @@ def _run_table(cfg, result: pd.DataFrame, reference) -> pd.DataFrame:
         ["Corridor", cfg.conductor_label,
          f"{C.CORRIDOR_LENGTH_KM:.0f} km, static rating {cfg.static_rating_a:.0f} A"],
         ["Reinforcement reference", TWIN["label"], f"static rating {TWIN_STATIC_A:.0f} A"],
-        ["Generation", f"{cfg.n_der} of {len(cfg.der_enabled)} plants, "
+        ["Generation", f"{cfg.n_der} of {len(cfg.units)} plants, "
                        f"{cfg.der_fleet_mw:.0f} MW", f"{cfg.control_mode} control"],
-        ["Storage", storage, ""],
     ]
+    for plant in cfg.added_der:
+        rows.append(["Added plant", f"{plant.name}, {plant.kind} {plant.mw:g} MW",
+                     f"at {plant.at}, {C.CORRIDOR_POSITION_KM[plant.at]:g} km from SUB_A"])
+    for load in cfg.added_loads:
+        rows.append(["Added load", f"{load.name}, {load.mw:g} MW constant",
+                     f"at {load.at}, {C.CORRIDOR_POSITION_KM[load.at]:g} km from SUB_A, "
+                     f"power factor {load.pf:g}"])
+    rows.append(["Storage", storage, ""])
     if cfg.dlr_mode == 0:
         rows.append(["Operative rating", f"static {cfg.static_rating_a:.0f} A", "fixed"])
     else:
@@ -565,7 +582,7 @@ def _current_table(cfg, ok: pd.DataFrame) -> pd.DataFrame:
 
 def _segment_table(ok: pd.DataFrame) -> pd.DataFrame:
     rows = []
-    for line in EXPORT_PATH_LINES:
+    for line in [line for line in EXPORT_PATH_LINES if f"i_{line}_a" in ok.columns]:
         name, km = SEGMENTS[line]
         amps = ok[f"i_{line}_a"]
         power = ok[f"p_{line}_mw"]
@@ -584,28 +601,31 @@ def _segment_table(ok: pd.DataFrame) -> pd.DataFrame:
 def _generation_table(cfg, ok: pd.DataFrame) -> pd.DataFrame:
     hours = len(ok) * C.DT_H
 
-    def row(name, rated, connected, available, delivered, curtailed, peak):
-        return [name, _num(rated, "MW"), connected, _num(available, "MWh"),
+    def row(name, kind, point, rated, connected, available, delivered, curtailed, peak):
+        return [name, kind, point, _num(rated, "MW"), connected, _num(available, "MWh"),
                 _num(delivered, "MWh"), _num(curtailed, "MWh"),
                 _num(100.0 * curtailed / available if available > 0 else 0.0, "%"),
                 _num(100.0 * delivered / (rated * hours) if rated and hours else 0.0, "%"),
                 _num(peak, "MW")]
 
+    ratings, kinds, points = cfg.unit_rating_mw, cfg.unit_kind, cfg.unit_bus
     rows, totals = [], np.zeros(4)
-    for unit in DER_UNITS:
-        connected = bool(cfg.der_enabled.get(unit, False))
-        rated = C.DER_RATING_MW[unit] if connected else 0.0
+    for unit in cfg.units:
+        connected = cfg.unit_enabled(unit)
+        rated = ratings[unit] if connected else 0.0
         available = _energy_mwh(ok[f"available_{unit}_mw"])
         delivered = _energy_mwh(ok[f"p_{unit}_mw"])
         curtailed = _energy_mwh(ok[f"curtailed_{unit}_mw"])
         totals += [rated, available, delivered, curtailed]
-        rows.append(row(unit, C.DER_RATING_MW[unit], "yes" if connected else "no",
-                        available, delivered, curtailed, ok[f"p_{unit}_mw"].max()))
+        rows.append(row(unit, kinds[unit], points[unit], ratings[unit],
+                        "yes" if connected else "no", available, delivered, curtailed,
+                        ok[f"p_{unit}_mw"].max()))
     rated, available, delivered, curtailed = totals
-    rows.append(row("Total connected", rated, f"{cfg.n_der} of {len(DER_UNITS)}",
+    rows.append(row("Total connected", "", "", rated, f"{cfg.n_der} of {len(cfg.units)}",
                     available, delivered, curtailed, realised_generation(ok).max()))
-    columns = ["Plant", "Rated (MW)", "Connected", "Available (MWh)", "Delivered (MWh)",
-               "Curtailed (MWh)", "Curtailed (%)", "Capacity factor (%)", "Peak output (MW)"]
+    columns = ["Plant", "Kind", "Connection point", "Rated (MW)", "Connected",
+               "Available (MWh)", "Delivered (MWh)", "Curtailed (MWh)", "Curtailed (%)",
+               "Capacity factor (%)", "Peak output (MW)"]
     return _table(rows, columns, "available = what the weather offered, delivered = what "
                                  "was injected after curtailment")
 
@@ -649,9 +669,27 @@ def _voltage_table(ok: pd.DataFrame) -> pd.DataFrame:
                                  f"substations; band {C.V_MIN_PU:g} to {C.V_MAX_PU:g} pu")
 
 
-def _transformer_table(ok: pd.DataFrame) -> pd.DataFrame:
+def _load_table(cfg, ok: pd.DataFrame, m: dict) -> pd.DataFrame:
     rows = []
-    for name, role in TRANSFORMER_ROLES.items():
+    for load in cfg.added_loads:
+        demand = ok[f"p_{load.name}_mw"] if f"p_{load.name}_mw" in ok else None
+        energy = _energy_mwh(demand) if demand is not None else None
+        rows.append([load.name, load.at, _num(C.CORRIDOR_POSITION_KM[load.at], "km"),
+                     _num(load.mw, "MW"), _num(load.pf, "pu"), _num(load.q_mvar, "MVAr"),
+                     _num(energy, "MWh")])
+    return _table(rows, ["Load", "Connection point", "From SUB_A (km)", "Demand (MW)",
+                         "Power factor", "Reactive (MVAr)", "Energy (MWh)"],
+                  f"constant demand on the 110 kV busbar; the corridor was overloaded by "
+                  f"power drawn toward a load for {m['hours_corridor_drawn_by_load']:g} h, "
+                  f"which curtailment cannot clear")
+
+
+def _transformer_table(cfg, ok: pd.DataFrame) -> pd.DataFrame:
+    roles = dict(TRANSFORMER_ROLES)
+    roles.update({added_trafo_name(p.name): f"{p.kind} step-up, {p.name} at {p.at}"
+                  for p in cfg.added_der})
+    rows = []
+    for name, role in roles.items():
         column = f"loading_{name}_pct"
         if column not in ok:
             continue
@@ -746,6 +784,9 @@ def _checks_table(cfg, result: pd.DataFrame, m: dict) -> pd.DataFrame:
     ]
     if cfg.dlr_mode > 0:
         rows.append(["Highest conductor temperature", "°C", m["t_cond_max_c"]])
+    if cfg.added_loads or m.get("hours_corridor_drawn_by_load"):
+        rows.append(["Corridor overloaded by power drawn to a load", "h",
+                     m["hours_corridor_drawn_by_load"]])
     rows += [
         [f"Any 110 kV bus above {C.V_MAX_PU:g} pu", "h", m["hours_voltage_high"]],
         [f"Any 110 kV bus below {C.V_MIN_PU:g} pu", "h", m["hours_voltage_low"]],
@@ -801,8 +842,10 @@ def summary_tables(cfg, result: pd.DataFrame, reference=None) -> dict:
     tables["CORRIDOR POWER FLOW"] = _segment_table(ok)
     tables["GENERATION BY PLANT"] = _generation_table(cfg, ok)
     tables["GRID INTERFACE (PCC)"] = _interface_table(cfg, ok, m)
+    if cfg.added_loads:
+        tables["ADDED LOADS"] = _load_table(cfg, ok, m)
     tables["VOLTAGE"] = _voltage_table(ok)
-    tables["TRANSFORMER LOADING"] = _transformer_table(ok)
+    tables["TRANSFORMER LOADING"] = _transformer_table(cfg, ok)
     tables["TECHNICAL COST: DLR VS STATIC" if r else "TECHNICAL COST"] = _cost_table(cfg, m, r)
     if cfg.dlr_mode > 0:
         tables["RATING SET BY"] = _binding_table(cfg, m)

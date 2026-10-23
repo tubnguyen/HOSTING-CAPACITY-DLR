@@ -31,6 +31,7 @@ _CURVE_KW = np.array([
 # Site wind-speed multipliers: the farms sit at different exposures, so they do
 # not all reach rated output on the same quarter hour.
 SITE_EXPOSURE = {"WF_1": 1.02, "WF_2": 1.00, "WF_3": 0.96}
+ADDED_FARM_EXPOSURE = 1.00      # an added farm sees the reference wind field
 
 
 def shear_exponent(v_low, v_high, z_low=10.0, z_high=C.DLR_REF_HEIGHT_M):
@@ -75,6 +76,22 @@ def wind_dispatch(weather: pd.DataFrame) -> pd.DataFrame:
         total = per_turbine * C.N_TURBINES[farm] * FARM_EFFICIENCY
         out[farm] = np.clip(total, 0.0, C.DER_RATING_MW[farm])
     return out.round(4)
+
+
+def added_farm_dispatch(weather: pd.DataFrame, rating_mw: float,
+                        exposure: float = ADDED_FARM_EXPOSURE) -> pd.Series:
+    """Available output [MW] of an added wind farm of any rating.
+
+    The same turbine, hub height, weather and losses as the built-in farms,
+    with the rating standing for the number of turbines. A rating that is not
+    a whole number of turbines is a farm of that many megawatts all the same.
+    """
+    v_low = np.hypot(weather["u10_ms"].to_numpy(), weather["v10_ms"].to_numpy())
+    v_high = np.hypot(weather["u100_ms"].to_numpy(), weather["v100_ms"].to_numpy())
+    per_turbine = turbine_power_mw(wind_at_hub(v_low, v_high) * exposure,
+                                   weather["t_air_c"].to_numpy())
+    total = per_turbine / C.P_TURBINE_MW * rating_mw * FARM_EFFICIENCY
+    return pd.Series(np.clip(total, 0.0, rating_mw), index=weather.index).round(4)
 
 
 def capacity_factor(dispatch: pd.DataFrame) -> dict:

@@ -15,6 +15,7 @@ from corridor_sim.config import (
     from_record,
     normalise_der,
     parse_args,
+    to_argv,
     to_record,
 )
 
@@ -210,3 +211,102 @@ def test_a_record_from_another_version_still_loads():
 def test_conductor_labels_name_the_builds():
     assert build_config(conductor="single").conductor_label == "1-Duck"
     assert build_config(conductor="twin").conductor_label == "2-Duck"
+
+
+# ── Added plants and loads ───────────────────────────────────────────────────
+def test_added_plants_and_loads_are_named_after_their_kind():
+    cfg = build_config(added_der=["wind:50@sub_c", "Solar:30@PCC", "wind:12.5@MID_A_C"],
+                       added_loads=["80@MID_C_PCC", "20@SUB_A:0.95"])
+    assert [(p.name, p.kind, p.mw, p.at) for p in cfg.added_der] == [
+        ("WF_4", "wind", 50.0, "SUB_C"), ("PV_2", "solar", 30.0, "PCC"),
+        ("WF_5", "wind", 12.5, "MID_A_C")]
+    assert [(q.name, q.mw, q.at, q.pf) for q in cfg.added_loads] == [
+        ("LOAD_1", 80.0, "MID_C_PCC", 1.0), ("LOAD_2", 20.0, "SUB_A", 0.95)]
+    assert cfg.units == DER_NAMES + ("WF_4", "PV_2", "WF_5")
+    assert cfg.n_der == 7 and cfg.der_fleet_mw == pytest.approx(C.FLEET_MW + 92.5)
+    assert cfg.unit_bus["WF_4"] == "SUB_C" and cfg.unit_bus["WF_3"] == "SUB_A"
+    assert cfg.unit_mode("PV_2") == cfg.pv_mode and cfg.unit_mode("WF_5") == cfg.control_mode
+    assert cfg.unit_q_limit_mvar["WF_4"] == pytest.approx(50.0 * C.TAN_PHI)
+    assert cfg.midpoints_used == {"MID_A_C", "MID_C_PCC"}
+    assert cfg.added_loads[1].q_mvar == pytest.approx(20.0 * C.TAN_PHI)
+
+
+@pytest.mark.parametrize("spec", ["wind:50", "hydro:50@SUB_A", "wind:abc@SUB_A",
+                                  "wind:50@TAP_W", "wind:-5@SUB_A", "wind:5000@SUB_A",
+                                  "50@SUB_A"])
+def test_a_bad_added_plant_is_refused(spec):
+    with pytest.raises(ValueError):
+        build_config(added_der=[spec])
+
+
+@pytest.mark.parametrize("spec", ["80", "80@NOWHERE", "0@SUB_C", "80@SUB_C:1.5",
+                                  "80@SUB_C:x"])
+def test_a_bad_added_load_is_refused(spec):
+    with pytest.raises(ValueError):
+        build_config(added_loads=[spec])
+
+
+@pytest.mark.parametrize("plant", [
+    {"name": "SUB_A", "kind": "wind", "mw": 10, "at": "PCC"},       # would clash with a bus
+    {"name": "WF_1", "kind": "wind", "mw": 10, "at": "PCC"},        # a built-in plant
+    {"name": "PV_7", "kind": "wind", "mw": 10, "at": "PCC"},        # wrong prefix for wind
+])
+def test_an_added_plant_name_must_be_its_kind_and_a_number(plant):
+    with pytest.raises(ValueError):
+        build_config(added_der=[plant])
+
+
+def test_added_items_change_the_run_name_but_not_a_plain_one():
+    assert build_config("dlr2_der4").stem == "single_der4_droop_dlr2_bess0"
+    cfg = build_config("dlr2_der4", added_der=["wind:50@SUB_C"], added_loads=["80@PCC"])
+    assert cfg.stem == "single_der5_droop_dlr2_bess0_wf50-SUB_C_ld80-PCC"
+    elsewhere = build_config("dlr2_der4", added_der=["wind:50@PCC"], added_loads=["80@PCC"])
+    assert elsewhere.stem != cfg.stem, "runs differing in where a plant connects keep apart"
+
+
+def test_the_reactive_window_grows_with_the_installed_fleet():
+    assert build_config().q_window_mvar == pytest.approx(C.Q_WINDOW_FRAC * C.FLEET_MW)
+    bigger = build_config(added_der=["wind:50@SUB_C"])
+    assert bigger.q_window_mvar == pytest.approx(C.Q_WINDOW_FRAC * (C.FLEET_MW + 50.0))
+    assert build_config(added_der=["wind:900@SUB_C"]).q_window_mvar == C.Q_WINDOW_CAP_MVAR
+
+
+def test_added_items_from_the_command_line():
+    cfg, _ = parse_args(["--add-der", "wind:50@SUB_C", "--add-der", "solar:20@PCC",
+                         "--add-load", "80@MID_A_C:0.98", "--der", "wf_1,PV_1"])
+    assert [p.spec for p in cfg.added_der] == ["wind:50@SUB_C", "solar:20@PCC"]
+    assert [q.spec for q in cfg.added_loads] == ["80@MID_A_C:0.98"]
+    assert cfg.active_der == ["WF_1", "PV_1", "WF_4", "PV_2"]
+    assert parse_args(["--der", "none"])[0].active_der == []
+    assert parse_args(["--der", "ALL"])[0].active_der == list(DER_NAMES)
+
+
+def test_a_record_with_added_items_rebuilds_the_same_configuration():
+    cfg = build_config("dlr2_der4_bess", added_der=["wind:50@SUB_C", "solar:12.5@MID_C_PCC"],
+                       added_loads=["80@SUB_A:0.95"])
+    assert from_record(json.loads(json.dumps(to_record(cfg)))) == cfg
+
+
+@pytest.mark.parametrize("argv", [
+    [],
+    ["--preset", "dlr2_der4_bess", "--days", "3"],
+    ["--conductor", "twin", "--dlr", "2", "--azimuth", "0", "--wind-factor", "0.55",
+     "--der", "WF_2,PV_1", "--add-der", "wind:50@SUB_C", "--add-load", "80@PCC:0.95",
+     "--storage", "--no-curtailment", "--export-cap", "200", "--start", "2024-03-01",
+     "--end", "2024-03-05", "--label", "case", "--energy-price", "80", "--no-plots",
+     "--compare"],
+    ["--dlr", "2", "--azimuth-z1", "0", "--azimuth-z2", "90", "--no-rating-cap",
+     "--no-equipment-limit", "--der", "none", "--reactive-price", "2.5"],
+    ["--dlr-cap-ratio", "1.3", "--control", "cosphi", "--out", "elsewhere"],
+])
+def test_the_printed_command_reproduces_the_run(argv):
+    """to_argv is the inverse of parse_args, so the interactive mode can print it."""
+    cfg, options = parse_args(argv)
+    again, again_options = parse_args(to_argv(cfg, options))
+    assert again == cfg
+    assert again_options == options
+
+
+def test_a_default_run_needs_no_options():
+    cfg, options = parse_args([])
+    assert to_argv(cfg, options) == []

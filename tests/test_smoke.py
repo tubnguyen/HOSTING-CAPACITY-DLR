@@ -233,3 +233,58 @@ def test_matrix_figure(tmp_path):
     out = tmp_path / "matrix.png"
     plots.curtailment_matrix(table, out)
     assert out.exists() and out.stat().st_size > 5000
+
+
+@pytest.fixture(scope="module")
+def added_run(tmp_path_factory):
+    """Plants and a load added at the connection points, at the static rating.
+
+    Two hours rather than six: at the static rating the corridor is curtailed
+    on every step, and that search is what a short window is short of.
+    """
+    cfg = build_config("static_der4", days=None, start="2024-03-01",
+                       end="2024-03-01T02:00:00", out_dir=tmp_path_factory.mktemp("added"),
+                       added_der=["wind:60@PCC", "solar:20@MID_A_C"],
+                       added_loads=["40@MID_C_PCC"])
+    metrics, paths = run_scenario(cfg, make_plots=True, progress=False)
+    from corridor_sim.reference import load_timeseries
+    return cfg, metrics, paths, load_timeseries(paths["timeseries"])
+
+
+def test_a_run_with_added_plants_and_loads_converges_and_balances(added_run):
+    cfg, _, _, result = added_run
+    assert result["converged"].all() and result["reg_converged"].all()
+    delivered = simulate.realised_generation(result)
+    assert (delivered + result["curtailed_total_mw"]).to_numpy() == pytest.approx(
+        result["available_total_mw"].to_numpy(), abs=1e-6)
+    assert set(simulate.units_in(result)) == set(cfg.units)
+    assert (result["p_LOAD_1_mw"] == 40.0).all()
+    # Both midpoints are in use, so both segments they sit on are in halves.
+    for line in ("CORR_PV_W_1", "CORR_PV_W_2", "CORR_C_B_1", "CORR_C_B_2"):
+        assert f"i_{line}_a" in result.columns
+    assert "i_CORR_PV_W_a" not in result.columns and "v_MID_C_PCC_pu" in result.columns
+
+
+def test_a_plant_at_the_pcc_is_never_cut_for_the_corridor(added_run):
+    _, _, _, result = added_run
+    corridor = result["curtail_cause"] == "corridor"
+    assert corridor.any(), "the window has to curtail for the corridor to test this"
+    assert result.loc[corridor, "curtailed_WF_1_mw"].sum() > 0.0
+    assert result.loc[corridor, "curtailed_WF_4_mw"].sum() == 0.0
+    assert (result["i_Z1_a"] <= result["rating_Z1_a"] + 1.0).all()
+    assert (result["i_Z2_a"] <= result["rating_Z2_a"] + 1.0).all()
+
+
+def test_a_run_with_added_items_writes_every_output(added_run):
+    cfg, metrics, paths, _ = added_run
+    assert metrics["added_der_mw"] == 80.0 and metrics["added_load_mw"] == 40.0
+    summary = paths["summary_csv"].read_text(encoding="utf-8-sig")
+    assert "ADDED LOADS" in summary and "LOAD_1,MID_C_PCC" in summary
+    assert "WF_4,wind,PCC" in summary and "T_WF_4" in summary
+    assert "TAP_PV to MID_A_C" in summary and "MID_C_PCC to TAP_B" in summary
+    figures = {f.name for f in (paths["summary_csv"].parent / "figures").glob("*.png")}
+    for name in ("current", "duration", "power", "segments", "voltage"):
+        assert f"{cfg.stem}_{name}.png" in figures
+    meta = json.loads(paths["metrics"].read_text())
+    assert meta["config"]["added_der"][0] == {"name": "WF_4", "kind": "wind", "mw": 60.0,
+                                              "at": "PCC"}

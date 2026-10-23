@@ -113,3 +113,28 @@ def test_residual_classification():
     assert classify_residual(3, False, True) == "capacity_exhausted"
     assert classify_residual(1, False, False) == "needs_reactive_support"
     assert classify_residual(3, False, False) == "unresolved"
+
+
+def _drawn_toward_the_head(load_mw=100.0):
+    """A large load at the head and little generation: the corridor imports."""
+    from corridor_sim import network as nw
+    from corridor_sim.config import build_config
+    from corridor_sim.controls import NetIndex
+    cfg = build_config("static_der4", added_loads=[f"{load_mw:g}@SUB_A"])
+    net, buses = nw.build(cfg)
+    idx = NetIndex.build(net, buses)
+    for unit in ("WF_1", "WF_2", "WF_3", "PV_1"):
+        net.sgen.at[idx.sgens[unit], "p_mw"] = 5.0
+    assert solve(net, "dc", deep=True)
+    return cfg, net, idx
+
+
+def test_an_overload_drawn_by_load_is_recorded_but_not_actionable():
+    """Cutting generation deepens an import overload, so it must not be curtailed for."""
+    cfg, net, idx = _drawn_toward_the_head()
+    level, _, _, detail = scan(net, idx, {"Z1": 300.0, "Z2": 300.0}, cfg)
+    assert level != 3, "an import overload is not an actionable thermal violation"
+    assert detail["drawn"][1] > 100.0
+    flags = violation_flags(detail)
+    assert flags["viol_L3"] == 1 and flags["viol_L3_import"] == 1
+    assert "(import)" in format_levels(detail)
