@@ -85,6 +85,7 @@ flag, a count or a name (`converged`, `curtail_trials`, `rating_Z1_binding`).
 | `qc_Z1_wm`, `qr_Z1_wm`, `qs_Z1_wm` | the IEEE 738 heat terms per metre: convection, radiation, solar gain |
 | `phi_Z1_deg`, `wind_Z1_ms` | wind angle to the conductor, and the cooling wind speed at it |
 | `converged`, `reg_*`, `curtail_*`, `viol_L1`…`viol_L4` | solver, control loop, curtailment and violation diagnostics |
+| `storage_captured_mw`, `storage_withheld_mw` | what the battery did for congestion before curtailment: charge taken from power that would have been curtailed, and discharge held back so generation could flow instead |
 | `curtail_fraction` | the share of its instantaneous output every curtailed plant gave up at this step, 0 to 1; `curtailed_<plant>_mw` is this times `available_<plant>_mw` for each plant cut |
 | `viol_L3_import` | a corridor segment overloaded by power drawn back toward the head for a large load; counted in `viol_L3` too, but never curtailed for (`curtail_exit` `load_driven`, `residual_class` `drawn_by_load`) |
 
@@ -97,7 +98,9 @@ In the order they appear in `<label>_summary.csv`: `RUN`, `HEADLINE`,
 `PERIOD MEANS` under four weeks), `CURRENT DURATION`, `CHECKS`, `STORAGE`. Each
 carries a one-line note on the title row.
 
-`RUN` lists every added plant and load with its connection point.
+`RUN` lists every added plant and load with its connection point, and where the
+battery is. `STORAGE` gives the battery's place, the energy it charged that would
+have been curtailed and the discharge it held back for congestion.
 `GENERATION BY PLANT` gives each plant's kind and connection point, added plants
 included. With added loads, `CHECKS` also gives the hours the corridor was
 overloaded by power drawn to a load, which curtailment cannot clear. With `--compare` the headline and cost tables gain a static column,

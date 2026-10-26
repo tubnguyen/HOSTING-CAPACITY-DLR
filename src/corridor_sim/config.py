@@ -137,12 +137,14 @@ class Config:
     storage_p_mw: float = C.BESS_P_MW
     storage_e_mwh: float = C.BESS_E_MWH
     storage_soc_init: float = 0.50
+    storage_at: str = C.STORAGE_DEFAULT_POINT        # one of C.STORAGE_POINTS
     storage_connection: str = "tie"                 # "tie" | "direct"
     storage_charge_source: str = "surplus_then_grid"
     storage_reserve_mw: float = C.BESS_P_MW
     storage_contract_mw: float = C.BESS_P_MW
     storage_q_mode: str = "droop"                   # "droop" | "cosphi" | "fixed" | "unity"
     storage_may_curtail_der: bool = False
+    storage_relieves_congestion: bool = True        # hold back or charge before curtailing
 
     # Window and I/O
     start: str = "2024-01-01"
@@ -221,10 +223,16 @@ class Config:
         return sum(load.mw for load in self.added_loads)
 
     @property
+    def storage_bus(self) -> str:
+        """The corridor bus the battery joins. A battery that is switched off
+        stays at TAP_B, so it never changes the network it is not part of."""
+        return self.storage_at if self.storage_enabled else C.STORAGE_DEFAULT_POINT
+
+    @property
     def midpoints_used(self) -> set:
         """Midpoint buses something connects to, and so has to be built."""
         points = {p.at for p in self.added_der} | {load.at for load in self.added_loads}
-        return points & set(C.MIDPOINT_BUSES)
+        return (points | {self.storage_bus}) & set(C.MIDPOINT_BUSES)
 
     @property
     def line(self) -> dict:
@@ -331,6 +339,8 @@ class Config:
             return self.label
         stem = (f"{self.conductor}_der{self.n_der}_{self.control_mode}"
                 f"_dlr{self.dlr_mode}_bess{int(self.storage_enabled)}")
+        if self.storage_bus != C.STORAGE_DEFAULT_POINT:
+            stem += f"-{self.storage_bus}"
         tags = [p.tag for p in self.added_der] + [load.tag for load in self.added_loads]
         return "_".join([stem] + tags)
 
@@ -501,6 +511,8 @@ def build_config(preset: str | None = None, **overrides) -> Config:
     fields["der_enabled"] = normalise_der(fields.get("der_enabled"))
     fields["added_der"] = normalise_added_der(fields.get("added_der"))
     fields["added_loads"] = normalise_added_loads(fields.get("added_loads"))
+    if "storage_at" in fields:
+        fields["storage_at"] = str(fields["storage_at"]).strip().upper()
     cfg = Config(**fields)
     validate(cfg)
     return cfg
@@ -543,6 +555,8 @@ def validate(cfg: Config) -> None:
     require(set(cfg.der_enabled) == set(DER_NAMES),
             f"der_enabled must cover every DER {list(DER_NAMES)}")
     _validate_added(cfg, require)
+    require(cfg.storage_at in C.STORAGE_POINTS,
+            f"bad storage_at {cfg.storage_at!r}; valid: {list(C.STORAGE_POINTS)}")
     require(cfg.storage_connection in {"tie", "direct"},
             f"bad storage_connection {cfg.storage_connection!r}; valid: ['direct', 'tie']")
     require(cfg.storage_q_mode in {"droop", "cosphi", "fixed", "unity"},
@@ -675,6 +689,10 @@ def parse_args(argv=None):
                    help="add a large constant load, e.g. 80@SUB_C or 80@SUB_C:0.95; "
                         "repeat to add more")
     p.add_argument("--storage", dest="storage_enabled", action="store_true", default=None)
+    p.add_argument("--storage-at", dest="storage_at", type=str.upper,
+                   choices=list(C.STORAGE_POINTS), metavar="POINT",
+                   help="where the battery connects (default TAP_B): "
+                        + ", ".join(C.STORAGE_POINTS) + "; implies --storage")
     p.add_argument("--no-curtailment", dest="curtailment", action="store_false", default=None)
     p.add_argument("--export-cap", dest="export_cap_mw", type=float)
     p.add_argument("--start")
@@ -721,6 +739,8 @@ def parse_args(argv=None):
         over["added_loads"] = list(a.add_load)
     if a.end is not None:
         over["days"] = None
+    if a.storage_at is not None:
+        over["storage_enabled"] = True
     return build_config(a.preset, **over), RunOptions(plots=a.plots, compare=a.compare,
                                                       interactive=a.interactive)
 
@@ -777,7 +797,9 @@ def to_argv(cfg: Config, options: RunOptions = RunOptions()) -> list:
         flag("--add-der", plant.spec)
     for load in cfg.added_loads:
         flag("--add-load", load.spec)
-    if cfg.storage_enabled:
+    if cfg.storage_enabled and cfg.storage_at != d.storage_at:
+        flag("--storage-at", cfg.storage_at)
+    elif cfg.storage_enabled:
         argv.append("--storage")
     if not cfg.curtailment:
         argv.append("--no-curtailment")

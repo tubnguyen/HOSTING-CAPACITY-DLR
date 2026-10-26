@@ -59,6 +59,23 @@ on is then built as two halves of the same conductor, named `<segment>_1` and
 
 A study with nothing at a midpoint builds exactly the network it always did.
 
+## Battery location
+
+The battery connects at TAP_B, 1 km before the PCC, unless `--storage-at` (or
+`storage_at` from Python) places it at `SUB_A`, `MID_A_C`, `SUB_C`, `MID_C_PCC` or the
+`PCC`. Wherever it is, it joins over the same 1 km 110 kV tie (`LAT_BESS`) and 40 MVA
+110/33 kV transformer (`T_BESS`), or straight onto the busbar with
+`storage_connection="direct"`. A battery that is switched off stays at TAP_B, so its
+place never changes a network it is not part of.
+
+Where it sits decides what it can do for the corridor: its power flows through every
+segment between its point and the PCC, and none upstream of it. Before any plant is
+curtailed it holds back discharge and charges with power that would be curtailed,
+for the export cap and for overloads on those segments
+([methodology](methodology.md#5-battery)). Moving it also moves where its reactive
+power supports the voltage, and where its discharge and grid charging load the
+corridor.
+
 ## Added plants and loads
 
 | | Added plant | Added load |
@@ -117,7 +134,7 @@ Design temperature 80 °C, diameter 25 mm.
 | WF_2 | 18 × 6 MW = 108 MW | 20 km lateral to TAP_W | ±35.5 MVAr |
 | WF_3 | 12 × 6 MW = 72 MW | 20 km lateral to SUB_A | ±23.7 MVAr |
 | PV_1 | 60 MW | 110/33 kV + 5 km cable at TAP_PV | ±19.7 MVAr |
-| BESS | 30 MW / 60 MWh | 110/33 kV + 1 km tie at TAP_B | ±9.9 MVAr |
+| BESS | 30 MW / 60 MWh | 110/33 kV + 1 km tie at TAP_B (or `--storage-at`) | ±9.9 MVAr |
 
 Reactive range is cos φ 0.95 at rated power.
 

@@ -3,8 +3,8 @@
 Sequence per timestep:
 
     loads -> plant dispatch -> storage intent -> coordinated voltage control
-    -> operative line rating -> storage reconciliation -> curtailment
-    -> state of charge and reserve -> record
+    -> operative line rating -> storage reconciliation -> storage relief
+    -> curtailment -> state of charge and reserve -> record
 
 The rating is computed from weather alone, so it is valid whether or not the
 power flow converged, and every row records which rating path produced it.
@@ -246,6 +246,9 @@ def run(cfg, net, buses, inputs, progress=True, label="") -> pd.DataFrame:
         # read before curtailment acts on it.
         uncurtailed = {zone: (_zone_current(net, idx, zone) if ok else float("nan"))
                        for zone in CORRIDOR_ZONES}
+        relief = {"withheld_mw": 0.0, "captured_mw": 0.0, "trials": 0}
+        if ok and cfg.storage_enabled and cfg.storage_relieves_congestion:
+            relief = storage.relieve_congestion(net, cfg, idx, limits, soc_mwh, phase2)
         if ok and cfg.curtailment:
             curtail_record = curtailment.curtail(net, cfg, idx, limits)
             ok = ok and curtail_record["ok"]
@@ -305,6 +308,11 @@ def run(cfg, net, buses, inputs, progress=True, label="") -> pd.DataFrame:
                     for zone in CORRIDOR_ZONES})
         row.update(_storage_columns(cfg, phase2, soc_mwh, p_realised, soc_clamped,
                                     reserve, short, float(activation[i]), ok, flag))
+        # Power the battery moved to relieve congestion before curtailment:
+        # discharge held back, and charge taken from what would be curtailed.
+        zero = 0.0 if ok else float("nan")
+        row["storage_withheld_mw"] = relief["withheld_mw"] if ok else zero
+        row["storage_captured_mw"] = relief["captured_mw"] if ok else zero
         row.update({k: v for k, v in curtail_record.items() if k != "ok"})
 
         if ok:

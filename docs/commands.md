@@ -40,7 +40,7 @@ for one question at a time:
 | 1 | Plants already on the corridor | `all`, `none`, or names such as `WF_1,PV_1` |
 | 2 | Added plants | how many (0 to 10); for each: `wind` or `solar`, rating in MW, connection point |
 | 3 | Large loads | how many (0 to 10); for each: demand in MW, connection point |
-| 4 | Battery | `yes` or `no` |
+| 4 | Battery | `yes` or `no`; if yes, where it connects (TAP_B by default) |
 | 5 | Corridor conductor | `single` or `twin` |
 | 6 | Line rating | `0` static, `1` ambient-adjusted, `2` full weather (or `static`, `ambient`, `full`) |
 | 7 | Time window | first day and number of days, inside the input data |
@@ -70,7 +70,8 @@ as it always has.
 | `--add-load MW@POINT[:PF]` | MW, connection point, optional lagging power factor | none | add a constant large load, e.g. `--add-load 80@MID_A_C`; repeat for more |
 | `-i`, `--interactive` | flag | off | ask for the scenario question by question (above) |
 | `--control` | `droop`, `cosphi` | `droop` | plant reactive power: Q(V) droop or fixed cos φ 0.95 |
-| `--storage` | flag | off | connect the 30 MW / 60 MWh battery |
+| `--storage` | flag | off | connect the 30 MW / 60 MWh battery, at TAP_B |
+| `--storage-at POINT` | `SUB_A`, `MID_A_C`, `SUB_C`, `MID_C_PCC`, `TAP_B`, `PCC` | `TAP_B` | connect the battery there instead (implies `--storage`); the run name gains e.g. `bess1-SUB_A` |
 | `--no-curtailment` | flag | on | record violations but never curtail |
 | `--export-cap MW` | number | `250` | contracted export limit at the PCC |
 
@@ -177,6 +178,11 @@ corridor-sim --dlr 2 --add-der wind:50@PCC --days 30
 # Two added plants and a large load midway along zone Z1
 corridor-sim --dlr 2 --add-der wind:50@SUB_C --add-der solar:30@MID_C_PCC --add-load 80@MID_A_C --days 30
 
+# Where the battery helps most: the same run with it at the head, mid-corridor, by the PCC
+corridor-sim --dlr 2 --storage-at SUB_A --days 30
+corridor-sim --dlr 2 --storage-at SUB_C --days 30
+corridor-sim --dlr 2 --storage-at PCC --days 30
+
 # Only the added plants: none of the built-in four
 corridor-sim --der none --add-der wind:120@MID_A_C --days 30
 ```
@@ -268,7 +274,8 @@ from Python:
 | `storage_charge_source` | `"surplus_then_grid"` | `"surplus_only"`, `"grid_only"` |
 | `storage_reserve_mw`, `storage_contract_mw` | `30`, `30` | reserve held and contracted delivery |
 | `storage_q_mode` | `"droop"` | `"cosphi"`, `"fixed"`, `"unity"` |
-| `storage_may_curtail_der` | `False` | let battery delivery displace generation at the export cap |
+| `storage_may_curtail_der` | `False` | let battery delivery displace generation at the export cap and in congestion |
+| `storage_relieves_congestion` | `True` | before curtailing, hold back discharge and charge with power that would be curtailed; `False` gives the battery's previous dispatch |
 
 Network and physical parameters (line lengths, conductor data, plant sizes,
 transformers, control deadbands) are constants in

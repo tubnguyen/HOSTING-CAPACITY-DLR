@@ -9,21 +9,29 @@ Sign convention, stated once because getting it wrong is silent:
 
 Both are written to every row so a sign error is auditable rather than hidden.
 
-Reach is asymmetric, and the asymmetry runs both ways. The battery connects
-near the receiving end, so it cannot relieve a thermal overload on the corridor
-sections upstream of its tap - only curtailment can. It does share the final
-section into the interface with generation, so discharging there competes with
-export for that segment, and because the battery is not curtailable the plants
-are cut instead. Both follow from where it is connected.
+Where it connects (Config.storage_at, TAP_B by default) decides what it can
+reach. Its power flows through every corridor segment between its point and
+the PCC, and through none upstream of it. Charging relieves an export overload
+on those segments and discharging adds to it; on segments upstream of the
+battery it can do neither, and only curtailment helps.
 
-Dispatch runs in two phases. Phase one sets an intent before the network is
+Dispatch runs in three phases. Phase one sets an intent before the network is
 solved; phase two reconciles that intent against the export headroom the
-solved network actually leaves.
+solved network actually leaves. Phase three, before any plant is curtailed,
+lets the battery relieve what binds within its reach: generation has priority,
+so a discharge that loads a congested segment or the export cap is held back
+first, and an idle or charging battery then charges with power that would
+otherwise be curtailed (Config.storage_relieves_congestion).
 """
 from __future__ import annotations
 
 from . import constants as C
-from .constraints import measure_pcc_export
+from .constraints import measure_pcc_export, scan
+from .controls import solve
+from .network import SEGMENT_ENDS
+
+RELIEF_RESOLUTION_MW = 0.5      # bracket width the relief search stops at
+RELIEF_MAX_TRIALS = 14
 
 
 def to_grid_frame(p_plant_mw: float) -> float:
@@ -132,6 +140,81 @@ def phase2_reconcile(net, cfg, idx, intent: dict, soc_mwh: float) -> dict:
     return {"mode": mode, "p_plant_mw": float(net.storage.at[idx.storage, "p_mw"]),
             "headroom_clamped": clamped, "shortfall_mw": shortfall,
             "charge_surplus_mw": charge_surplus, "charge_grid_mw": charge_grid}
+
+
+def _within_reach(cfg, detail: dict) -> bool:
+    """Whether what binds includes something the battery's power flows through.
+
+    The export cap always does. A corridor segment does when it carries power
+    toward the PCC and lies between the battery's point and the PCC.
+    """
+    if detail["levels"][4] is not None:
+        return True
+    here = C.CORRIDOR_POSITION_KM[cfg.storage_bus]
+    return any(name in SEGMENT_ENDS and C.CORRIDOR_POSITION_KM[SEGMENT_ENDS[name][0]] >= here
+               for name in detail.get("corridor_over", []))
+
+
+def relieve_congestion(net, cfg, idx, limits_a, soc_mwh: float, phase: dict) -> dict:
+    """Phase three: the smallest move of the battery that clears what it can reach.
+
+    Raises the plant-frame power - less discharge, or more charge - just far
+    enough to clear the export cap and every overloaded segment between the
+    battery and the PCC, or as far as it can go. A discharge is only held
+    back, never turned into a charge, and only when generation has priority
+    (storage_may_curtail_der off). Charging is limited by the state of charge
+    and taken only when the battery may charge from surplus. What it leaves
+    binding is curtailment's. `phase` is updated to the power applied.
+    """
+    out = {"withheld_mw": 0.0, "captured_mw": 0.0, "trials": 0}
+    level, _, _, detail = scan(net, idx, limits_a, cfg)
+    if level == 0 or not _within_reach(cfg, detail):
+        return out
+    p0 = float(net.storage.at[idx.storage, "p_mw"])
+    if phase["mode"] == "discharge":
+        room = -p0 if not cfg.storage_may_curtail_der else 0.0
+    elif cfg.storage_charge_source != "grid_only":
+        room = max(0.0, chargeable_mw(cfg, soc_mwh) - max(p0, 0.0))
+    else:
+        room = 0.0
+    if room <= 0.01:
+        return out
+
+    def apply(step_mw: float) -> bool:
+        net.storage.at[idx.storage, "p_mw"] = p0 + step_mw
+        if cfg.storage_q_mode != "droop":
+            net.storage.at[idx.storage, "q_mvar"] = _static_q(cfg, p0 + step_mw)
+        out["trials"] += 1
+        return solve(net, "results")
+
+    def cleared() -> bool:
+        level, _, _, detail = scan(net, idx, limits_a, cfg)
+        return level == 0 or not _within_reach(cfg, detail)
+
+    lo, hi = 0.0, room
+    if apply(room) and cleared():
+        while hi - lo > RELIEF_RESOLUTION_MW and out["trials"] < RELIEF_MAX_TRIALS:
+            mid = 0.5 * (lo + hi)
+            if apply(mid) and cleared():
+                hi = mid
+            else:
+                lo = mid
+    if not apply(hi):
+        apply(0.0)
+        return out
+
+    moved = hi
+    if phase["mode"] == "discharge":
+        out["withheld_mw"] = moved
+        phase["shortfall_mw"] = phase.get("shortfall_mw", 0.0) + moved
+        phase["headroom_clamped"] = 1
+    else:
+        out["captured_mw"] = moved
+        phase["charge_surplus_mw"] = phase.get("charge_surplus_mw", 0.0) + moved
+        phase["mode"] = "charge_mixed" if phase.get("charge_grid_mw", 0.0) > 0.005 \
+            else "charge_surplus"
+    phase["p_plant_mw"] = p0 + moved
+    return out
 
 
 def update_soc(cfg, soc_mwh: float, p_plant_mw: float, apply: bool):

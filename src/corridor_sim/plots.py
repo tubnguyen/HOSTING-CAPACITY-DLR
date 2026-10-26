@@ -518,8 +518,8 @@ def topology_elements(cfg) -> list:
         items.append(dict(name=unit, kind=cfg.unit_kind[unit], mw=mw, bus=cfg.unit_bus[unit],
                           added=unit not in C.DER_JOIN_BUS, text=f"{mw:g} MW"))
     if cfg.storage_enabled:
-        items.append(dict(name=C.BESS_NAME, kind="battery", mw=cfg.storage_p_mw, bus="TAP_B",
-                          added=False,
+        items.append(dict(name=C.BESS_NAME, kind="battery", mw=cfg.storage_p_mw,
+                          bus=cfg.storage_bus, added=cfg.storage_bus != C.STORAGE_DEFAULT_POINT,
                           text=f"{cfg.storage_p_mw:g} MW / {cfg.storage_e_mwh:g} MWh"))
     for load in cfg.added_loads:
         items.append(dict(name=load.name, kind="load", mw=load.mw, bus=load.at, added=True,

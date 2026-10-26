@@ -262,6 +262,14 @@ def metrics(cfg, result: pd.DataFrame) -> dict:
             "storage_shortfall_mwh": _energy_mwh(ok["storage_shortfall_mw"].fillna(0)),
             "hours_reserve_short": float(ok["storage_reserve_short"].sum() * C.DT_H),
             "storage_soc_mean_pct": float(ok["storage_soc_pct"].mean()),
+            "storage_bus": cfg.storage_bus,
+            # What the battery did for congestion before curtailment acted:
+            # energy it charged that would have been curtailed, and discharge
+            # it held back so that generation could export instead.
+            "storage_captured_mwh": (_energy_mwh(ok["storage_captured_mw"].fillna(0))
+                                     if "storage_captured_mw" in ok else 0.0),
+            "storage_withheld_mwh": (_energy_mwh(ok["storage_withheld_mw"].fillna(0))
+                                     if "storage_withheld_mw" in ok else 0.0),
         })
     return out
 
@@ -493,7 +501,7 @@ def _ceilings(cfg) -> str:
 
 
 def _run_table(cfg, result: pd.DataFrame, reference) -> pd.DataFrame:
-    storage = (f"{cfg.storage_p_mw:.0f} MW / {cfg.storage_e_mwh:.0f} MWh"
+    storage = (f"{cfg.storage_p_mw:.0f} MW / {cfg.storage_e_mwh:.0f} MWh at {cfg.storage_bus}"
                if cfg.storage_enabled else "none")
     rows = [
         ["Scenario", cfg.stem, RATING_METHODS[cfg.dlr_mode]],
@@ -801,15 +809,20 @@ def _checks_table(cfg, result: pd.DataFrame, m: dict) -> pd.DataFrame:
                   ["Check", "Unit", "Value"], "limits after control; the hours should be zero")
 
 
-def _storage_table(m: dict) -> pd.DataFrame:
+def _storage_table(cfg, m: dict) -> pd.DataFrame:
     rows = [["Discharged", "MWh", m["storage_discharged_mwh"]],
             ["Charged", "MWh", m["storage_charged_mwh"]],
+            ["Charged with power that would have been curtailed", "MWh",
+             m["storage_captured_mwh"]],
+            ["Discharge held back for congestion", "MWh", m["storage_withheld_mwh"]],
             ["Equivalent cycles", "cycles", m["storage_cycles"]],
             ["Delivery shortfall", "MWh", m["storage_shortfall_mwh"]],
             ["Hours short of reserve", "h", m["hours_reserve_short"]],
             ["Mean state of charge", "%", m["storage_soc_mean_pct"]]]
+    where = (f"battery at {cfg.storage_bus}, "
+             f"{C.CORRIDOR_POSITION_KM[cfg.storage_bus]:g} km from SUB_A")
     return _table([[name, unit, _num(v, unit)] for name, unit, v in rows],
-                  ["Metric", "Unit", "Value"], "battery at TAP_B; discharge counts as export")
+                  ["Metric", "Unit", "Value"], f"{where}; discharge counts as export")
 
 
 def _reference_metrics(reference) -> dict | None:
@@ -853,7 +866,7 @@ def summary_tables(cfg, result: pd.DataFrame, reference=None) -> dict:
     tables["CURRENT DURATION"] = _duration_table(result)
     tables["CHECKS"] = _checks_table(cfg, result, m)
     if cfg.storage_enabled:
-        tables["STORAGE"] = _storage_table(m)
+        tables["STORAGE"] = _storage_table(cfg, m)
     return tables
 
 

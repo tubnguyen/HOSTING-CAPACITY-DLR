@@ -137,3 +137,14 @@ def test_an_added_load_draws_its_demand_from_the_110_kv_busbar():
     assert loads.loc["LOAD_1", "p_mw"] == 80.0 and loads.loc["LOAD_1", "q_mvar"] == 0.0
     assert loads.loc["LOAD_2", "q_mvar"] == pytest.approx(20.0 * C.TAN_PHI)
     assert "added load 100 MW" in nw.summary(cfg, net)
+
+
+@pytest.mark.parametrize("point", C.STORAGE_POINTS)
+def test_the_battery_joins_its_point_over_its_tie(point):
+    cfg = build_config("dlr2_der4_bess", storage_at=point)
+    net, buses = nw.build(cfg)
+    tie = net.line.set_index("name").loc["LAT_BESS"]
+    assert tie.from_bus == buses[point] and tie.length_km == pytest.approx(C.LEN_LAT_BESS)
+    direct, direct_buses = nw.build(build_config("dlr2_der4_bess", storage_at=point,
+                                                 storage_connection="direct"))
+    assert direct.storage.at[direct.storage.index[0], "bus"] == direct_buses[point]

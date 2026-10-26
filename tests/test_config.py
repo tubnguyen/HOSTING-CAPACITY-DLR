@@ -298,6 +298,7 @@ def test_a_record_with_added_items_rebuilds_the_same_configuration():
     ["--dlr", "2", "--azimuth-z1", "0", "--azimuth-z2", "90", "--no-rating-cap",
      "--no-equipment-limit", "--der", "none", "--reactive-price", "2.5"],
     ["--dlr-cap-ratio", "1.3", "--control", "cosphi", "--out", "elsewhere"],
+    ["--storage-at", "MID_C_PCC", "--add-der", "solar:30@SUB_A"],
 ])
 def test_the_printed_command_reproduces_the_run(argv):
     """to_argv is the inverse of parse_args, so the interactive mode can print it."""
@@ -310,3 +311,28 @@ def test_the_printed_command_reproduces_the_run(argv):
 def test_a_default_run_needs_no_options():
     cfg, options = parse_args([])
     assert to_argv(cfg, options) == []
+
+
+def test_the_battery_can_be_placed_at_any_connection_point_or_tap_b():
+    for point in C.STORAGE_POINTS:
+        cfg, _ = parse_args(["--storage-at", point.lower()])
+        assert cfg.storage_enabled and cfg.storage_bus == point
+    assert build_config(storage_enabled=True).storage_bus == "TAP_B"
+    with pytest.raises(SystemExit):
+        parse_args(["--storage-at", "TAP_W"])
+    with pytest.raises(ValueError, match="storage_at"):
+        build_config(storage_at="SUB_B")
+
+
+def test_a_moved_battery_names_its_place_in_the_run_name():
+    assert build_config("dlr2_der4_bess").stem == "single_der4_droop_dlr2_bess1"
+    moved = build_config("dlr2_der4_bess", storage_at="SUB_A")
+    assert moved.stem == "single_der4_droop_dlr2_bess1-SUB_A"
+
+
+def test_a_switched_off_battery_stays_at_tap_b():
+    """Its place only matters when it is connected, so it cannot change the network."""
+    cfg = build_config(storage_at="MID_A_C")
+    assert not cfg.storage_enabled and cfg.storage_bus == "TAP_B"
+    assert cfg.midpoints_used == set()
+    assert build_config(storage_at="MID_A_C", storage_enabled=True).midpoints_used == {"MID_A_C"}

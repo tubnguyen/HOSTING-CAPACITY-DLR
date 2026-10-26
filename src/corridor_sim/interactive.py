@@ -154,10 +154,10 @@ def _coverage(cfg: Config):
         return None, None
 
 
-def _point_options() -> list:
+def _point_options(points=C.CONNECTION_POINTS) -> list:
     return [(point, f"{C.CONNECTION_POINT_NAMES[point]}, "
                     f"{C.CORRIDOR_POSITION_KM[point]:g} km from SUB_A")
-            for point in C.CONNECTION_POINTS]
+            for point in points]
 
 
 def _section(p: Prompter, number: int, total: int, title: str) -> None:
@@ -258,7 +258,7 @@ def _describe(cfg: Config, options: RunOptions) -> list:
     plants = ", ".join(built) or "none of the built-in plants"
     added = "; ".join(f"{q.name} {q.kind} {q.mw:g} MW at {q.at}" for q in cfg.added_der)
     loads = "; ".join(f"{q.name} {q.mw:g} MW at {q.at}" for q in cfg.added_loads)
-    battery = (f"{cfg.storage_p_mw:g} MW / {cfg.storage_e_mwh:g} MWh at TAP_B"
+    battery = (f"{cfg.storage_p_mw:g} MW / {cfg.storage_e_mwh:g} MWh at {cfg.storage_bus}"
                if cfg.storage_enabled else "none")
     outputs = [f"{cfg.out_dir}/{cfg.stem}/", "figures" if options.plots else "no figures"]
     if options.compare:
@@ -299,7 +299,12 @@ def ask_scenario(base: Config, options: RunOptions = RunOptions(), ask=None, say
 
     _section(p, 4, total, "Battery")
     storage = p.yes_no(f"Connect the {base.storage_p_mw:g} MW / {base.storage_e_mwh:g} MWh "
-                       f"battery at TAP_B?", base.storage_enabled)
+                       f"battery?", base.storage_enabled)
+    storage_at = base.storage_at
+    if storage:
+        say("     Where it connects:")
+        storage_at = p.choose("Connection point", _point_options(C.STORAGE_POINTS),
+                              base.storage_at, numbered=True)
 
     _section(p, 5, total, "Corridor conductor")
     conductors = [(name, f"{opt['label']}, static rating {opt['max_i_ka'] * 1000:.0f} A"
@@ -316,7 +321,8 @@ def ask_scenario(base: Config, options: RunOptions = RunOptions(), ask=None, say
     start, days = _window(p, base)
 
     answers = {"der_enabled": der, "added_der": plants, "added_loads": loads,
-               "storage_enabled": storage, "conductor": conductor, "dlr_mode": rating,
+               "storage_enabled": storage, "storage_at": storage_at,
+               "conductor": conductor, "dlr_mode": rating,
                "start": start, "days": days}
     draft = from_record({**to_record(base), **answers})
 

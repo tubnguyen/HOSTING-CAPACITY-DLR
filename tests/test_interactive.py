@@ -58,7 +58,7 @@ def test_a_scenario_from_the_answers():
         "solar", "30 MW", "5",              # PV_2, at the PCC by its number
         "wind", "", "mid_a_c",              # WF_4, default 50 MW, by its name
         "1", "80", "sub_c",                 # one load
-        "y",                                # battery
+        "y", "1",                           # battery, at SUB_A by its number
         "twin",                             # conductor
         "full",                             # rating mode, by name
         "2024-03-01", "3",                  # window
@@ -71,11 +71,13 @@ def test_a_scenario_from_the_answers():
     assert cfg.active_der == ["WF_1", "PV_1", "PV_2", "WF_4"]
     assert [p.spec for p in cfg.added_der] == ["solar:30@PCC", "wind:50@MID_A_C"]
     assert [q.spec for q in cfg.added_loads] == ["80@SUB_C"]
-    assert cfg.storage_enabled and cfg.conductor == "twin" and cfg.dlr_mode == 2
+    assert cfg.storage_enabled and cfg.storage_bus == "SUB_A"
+    assert cfg.conductor == "twin" and cfg.dlr_mode == 2
     assert (cfg.start, cfg.days, cfg.label) == ("2024-03-01", 3, "my_case")
     assert options.compare and not options.plots and not options.interactive
     command = ("corridor-sim --conductor twin --dlr 2 --der WF_1,PV_1 --add-der solar:30@PCC "
-               "--add-der wind:50@MID_A_C --add-load 80@SUB_C --storage --start 2024-03-01 "
+               "--add-der wind:50@MID_A_C --add-load 80@SUB_C --storage-at SUB_A "
+               "--start 2024-03-01 "
                "--days 3 --label my_case --no-plots --compare")
     assert command in script.text
     assert parse_args(command.split()[1:]) == (cfg, options)
@@ -103,10 +105,13 @@ def test_an_answer_that_matches_no_option_is_asked_again():
 
 
 def test_options_given_with_interactive_are_the_defaults_offered():
-    script = Script(*DEFAULTS, "", "", "")        # and the added plant's three
+    # and the added plant's three questions, and where the battery connects
+    script = Script(*DEFAULTS, "", "", "", "")
     cfg, options = _run(script, ["-i", "--preset", "dlr2_der4_bess", "--days", "3",
-                                 "--add-der", "wind:40@PCC", "--no-plots"])
+                                 "--add-der", "wind:40@PCC", "--no-plots",
+                                 "--storage-at", "MID_C_PCC"])
     assert cfg.dlr_mode == 2 and cfg.storage_enabled and cfg.days == 3
+    assert cfg.storage_bus == "MID_C_PCC", "the battery's place is a default offered too"
     assert [p.spec for p in cfg.added_der] == ["wind:40@PCC"]
     assert not options.plots
     assert any("[1]" in prompt for prompt in script.prompts if "plants to add" in prompt)
