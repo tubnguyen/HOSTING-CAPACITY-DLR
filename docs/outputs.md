@@ -107,6 +107,7 @@ a DLR column and the change in both the quantity's own unit and in per cent.
 
 | Figure | What it shows |
 |---|---|
+| `<label>_topology.png` | single-line diagram of the network the run was built with: the 110 kV busbars from SUB_A to the PCC with their distance from the head, the plants connected above and the battery and added loads below, each with its rating, added connections dashed, the two rating zones underneath; plants switched off are left out |
 | `<label>_current.png` | the current from all plants at 15 minutes against every rating, with the exceedance shaded; below it, the monthly mean with the range each month covered |
 | `<label>_duration.png` | how long that current stays above each rating, in per cent of the window and in hours |
 | `<label>_power.png` | active power from the plants to the grid, and reactive power at the interface |

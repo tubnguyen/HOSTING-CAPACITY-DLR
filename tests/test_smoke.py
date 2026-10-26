@@ -154,7 +154,7 @@ def test_reports_and_figures_are_written(tmp_path):
     assert meta["scenario"] == cfg.stem
     assert meta["config"]["dlr_mode"] == 2 and meta["static_key"]
     figures = {f.name for f in (tmp_path / cfg.stem / "figures").glob("*.png")}
-    for name in ("current", "duration", "power", "segments", "voltage",
+    for name in ("topology", "current", "duration", "power", "segments", "voltage",
                  "rating_drivers", "storage"):
         assert f"{cfg.stem}_{name}.png" in figures
     assert f"{cfg.stem}_cost.png" not in figures, "the cost figure was retired"
@@ -297,7 +297,7 @@ def test_a_run_with_added_items_writes_every_output(added_run):
     assert "WF_4,wind,PCC" in summary and "T_WF_4" in summary
     assert "TAP_PV to MID_A_C" in summary and "MID_C_PCC to TAP_B" in summary
     figures = {f.name for f in (paths["summary_csv"].parent / "figures").glob("*.png")}
-    for name in ("current", "duration", "power", "segments", "voltage"):
+    for name in ("topology", "current", "duration", "power", "segments", "voltage"):
         assert f"{cfg.stem}_{name}.png" in figures
     meta = json.loads(paths["metrics"].read_text())
     assert meta["config"]["added_der"][0] == {"name": "WF_4", "kind": "wind", "mw": 60.0,
