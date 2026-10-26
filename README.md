@@ -112,7 +112,7 @@ Each run writes to `runs/<label>/`:
 | `<label>_timeseries.csv` | every quantity per step: flows, voltages, ratings and what bound them, the current before and after curtailment, conductor temperature, curtailment and its cause, tap and reactor operations |
 | `<label>_violations.csv` | every step still violating a limit after control |
 | `<label>_metrics.json` | every headline number, plus the run's full settings |
-| `figures/` | corridor current (15-minute series and monthly means), current duration, power flow, current along the corridor, voltage, rating drivers (mode 2), battery operation |
+| `figures/` | network topology (plants, battery and loads with their ratings), corridor current (15-minute series and monthly means), current duration, power flow, current along the corridor, voltage, rating drivers (mode 2), battery operation |
 
 **Every column name, table and figure explained: [docs/outputs.md](docs/outputs.md).**
 

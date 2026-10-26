@@ -18,6 +18,9 @@ curtailment without a separate curve for it.
 Colours keep one meaning across figures: orange is what the plants offer,
 aqua what actually flows, blue the operative rating or the interface, grey
 the heat balance and every fixed reference.
+
+The topology figure is the exception, a diagram rather than a chart: it
+draws the network the run was built with, one colour per kind of asset.
 """
 from __future__ import annotations
 
@@ -30,6 +33,7 @@ import pandas as pd
 matplotlib.use("Agg")
 import matplotlib.dates as mdates  # noqa: E402
 import matplotlib.pyplot as plt  # noqa: E402
+from matplotlib.lines import Line2D  # noqa: E402
 from matplotlib.patches import Patch  # noqa: E402
 
 from . import constants as C  # noqa: E402
@@ -489,6 +493,143 @@ def storage_operation(cfg, result: pd.DataFrame, path: Path):
     plt.close(fig)
 
 
+# ── Network topology ─────────────────────────────────────────────────────────
+TOPOLOGY_KINDS = {               # colour, symbol, legend label
+    "wind": (BLUE, "W", "wind farm"),
+    "solar": (SERIES[3], "S", "solar plant"),
+    "battery": (AQUA, "B", "battery"),
+    "load": (SERIES[4], "L", "added load"),
+}
+_TOPOLOGY_BUSES = ("SUB_A", "TAP_PV", "MID_A_C", "TAP_W", "SUB_C", "MID_C_PCC", "TAP_B", "PCC")
+_BUS_GAP = 1.3                   # diagram units between neighbouring busbars
+
+
+def topology_elements(cfg) -> list:
+    """What the run connects: plants switched on, the battery if on, added loads.
+
+    Each is a dict of name, kind, rating, the corridor bus it joins, whether
+    it was added to the shipped network, and the text that labels it.
+    """
+    items = []
+    for unit in cfg.units:
+        if not cfg.unit_enabled(unit):
+            continue
+        mw = cfg.unit_rating_mw[unit]
+        items.append(dict(name=unit, kind=cfg.unit_kind[unit], mw=mw, bus=cfg.unit_bus[unit],
+                          added=unit not in C.DER_JOIN_BUS, text=f"{mw:g} MW"))
+    if cfg.storage_enabled:
+        items.append(dict(name=C.BESS_NAME, kind="battery", mw=cfg.storage_p_mw, bus="TAP_B",
+                          added=False,
+                          text=f"{cfg.storage_p_mw:g} MW / {cfg.storage_e_mwh:g} MWh"))
+    for load in cfg.added_loads:
+        items.append(dict(name=load.name, kind="load", mw=load.mw, bus=load.at, added=True,
+                          text=f"{load.mw:g} MW"))
+    return items
+
+
+def spread(wanted, gap: float) -> list:
+    """Positions as close to `wanted` as possible, never closer than `gap`.
+
+    Items that would crowd are gathered into runs spaced `gap` apart and
+    centred on where they wanted to be; order is kept, ties in input order.
+    """
+    order = sorted(range(len(wanted)), key=lambda i: wanted[i])
+    runs = []                                   # [members, first position]
+    for i in order:
+        runs.append([[i], wanted[i]])
+        while len(runs) > 1 and runs[-2][1] + gap * len(runs[-2][0]) > runs[-1][1] + 1e-9:
+            members = runs[-2][0] + runs[-1][0]
+            centre = sum(wanted[m] for m in members) / len(members)
+            runs[-2:] = [[members, centre - gap * (len(members) - 1) / 2]]
+    placed = [0.0] * len(wanted)
+    for members, first in runs:
+        for k, m in enumerate(members):
+            placed[m] = first + k * gap
+    return placed
+
+
+def network_topology(cfg, path: Path):
+    """Single-line diagram of the network this run was built with.
+
+    The 110 kV busbars evenly spaced along the corridor from SUB_A to the
+    PCC, each with its distance from the head; generation above, the battery
+    and added loads below, each labelled with its rating; added connections
+    dashed; the two rating zones bracketed underneath. Plants switched off
+    are left out. Even spacing rather than distance keeps TAP_B and the PCC,
+    1 km apart, from landing on each other.
+    """
+    _style()
+    buses = [b for b in _TOPOLOGY_BUSES if b not in C.MIDPOINT_BUSES or b in cfg.midpoints_used]
+    x = {b: _BUS_GAP * i for i, b in enumerate(buses)}
+    items = topology_elements(cfg)
+    for side in (1, -1):
+        members = [e for e in items if (e["kind"] in ("wind", "solar")) == (side > 0)]
+        widest = max((len(e["text"]) for e in members), default=0)
+        gap = max(0.66, 0.068 * widest + 0.15)
+        for e, ex in zip(members, spread([x[e["bus"]] for e in members], gap), strict=True):
+            e["side"], e["x"] = side, ex
+    lo = min([0.0] + [e["x"] for e in items])
+    hi = max([x["PCC"]] + [e["x"] for e in items])
+
+    fig, ax = plt.subplots(figsize=(max(12.0, 0.95 * (hi - lo) + 3.5), 5.6))
+    ax.plot([0, x["PCC"]], [0, 0], color=INK, lw=4, solid_capstyle="butt", zorder=2)
+    for b, bx in x.items():
+        ax.plot([bx, bx], [-0.2, 0.2], color=INK, lw=6, solid_capstyle="butt", zorder=3)
+        ax.text(bx - 0.08, 0.12, b, ha="right", va="bottom", fontsize=8.5, fontweight="bold")
+        ax.text(bx - 0.08, -0.12, f"{C.CORRIDOR_POSITION_KM[b]:g} km", ha="right", va="top",
+                fontsize=8, color=INK_2)
+    ax.annotate("", xy=(x["PCC"] + 1.1, 0), xytext=(x["PCC"] + 0.05, 0),
+                arrowprops={"arrowstyle": "-|>", "color": INK, "lw": 2})
+    ax.text(x["PCC"] + 1.2, 0, "grid", va="center", fontsize=9, fontweight="bold")
+
+    z1 = C.CORRIDOR_POSITION_KM["SUB_C"]
+    z2 = C.CORRIDOR_LENGTH_KM - z1
+    for start, end, zone, km in ((0, x["SUB_C"], "Z1", z1), (x["SUB_C"], x["PCC"], "Z2", z2)):
+        ax.plot([start, start, end, end], [-2.43, -2.55, -2.55, -2.43], color=MUTED, lw=1.1)
+        ax.text((start + end) / 2, -2.65, f"zone {zone}  ·  {km:g} km", ha="center",
+                va="top", fontsize=8.5, color=INK_2)
+
+    for e in items:
+        colour, symbol, _ = TOPOLOGY_KINDS[e["kind"]]
+        bx, ex, side = x[e["bus"]], e["x"], e["side"]
+        # Alternate the height of the horizontal run by bus, so the runs of
+        # neighbouring busbars cannot lie on top of each other.
+        knee = side * (0.6 if buses.index(e["bus"]) % 2 else 0.75)
+        ax.plot([bx, bx, ex, ex], [side * 0.2, knee, knee, side * 1.13], color=INK_2, lw=1.2,
+                ls=(0, (3, 2)) if e["added"] else "-", zorder=1)
+        ax.scatter([ex], [side * 1.35], s=560, color=colour, zorder=4, edgecolor=SURFACE,
+                   lw=1.5)
+        ax.text(ex, side * 1.35, symbol, ha="center", va="center", color="white", fontsize=9,
+                fontweight="bold", zorder=5)
+        ax.text(ex, side * 1.65, f"{e['name']}\n{e['text']}", ha="center",
+                va="bottom" if side > 0 else "top", fontsize=8.3, linespacing=1.3)
+    if not items:
+        ax.text(x["PCC"] / 2, 1.2, "no plants, battery or added loads connected",
+                ha="center", fontsize=9, color=INK_2)
+
+    shown = [k for k in TOPOLOGY_KINDS if any(e["kind"] == k for e in items)]
+    handles = [Line2D([], [], marker="o", ls="", ms=11, color=TOPOLOGY_KINDS[k][0],
+                      label=TOPOLOGY_KINDS[k][2]) for k in shown]
+    if any(e["added"] for e in items):
+        handles.append(Line2D([], [], color=INK_2, ls=(0, (3, 2)), label="added connection"))
+    if handles:
+        ax.legend(handles=handles, loc="upper left", bbox_to_anchor=(0, 0.02),
+                  ncols=len(handles), frameon=False)
+
+    rating = {0: "static rating", 1: "ambient-adjusted DLR", 2: "full-weather DLR"}[cfg.dlr_mode]
+    generation = sum(e["mw"] for e in items if e["kind"] in ("wind", "solar"))
+    title = (f"Network  ·  {cfg.conductor_label} corridor, {C.CORRIDOR_LENGTH_KM:g} km, static "
+             f"{cfg.static_rating_a:.0f} A, {rating}  ·  {generation:g} MW generation")
+    if cfg.added_loads:
+        title += f", {cfg.added_load_mw:g} MW added load"
+    ax.set_title(title, loc="left", fontsize=11, fontweight="bold")
+    ax.set_xlim(lo - 1.0, hi + 1.8)
+    ax.set_ylim(-3.1, 2.7)
+    ax.axis("off")
+    fig.savefig(path, bbox_inches="tight")
+    plt.close(fig)
+
+
 # Figures earlier versions drew and this one does not: removed when a run of
 # the same name is drawn again, so a folder never mixes two versions. The
 # technical cost is still in the summary tables and the metrics; it is the
@@ -510,6 +651,7 @@ def run_figures(cfg, result: pd.DataFrame, out_dir: Path) -> list:
         made.append(out_dir / f"{cfg.stem}_{name}.png")
         return made[-1]
 
+    network_topology(cfg, target("topology"))
     corridor_current(cfg, result, target("current"))
     current_duration(cfg, result, target("duration"))
     power_flow(cfg, result, target("power"))

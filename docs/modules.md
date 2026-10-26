@@ -20,7 +20,7 @@
 | [`simulate.py`](../src/corridor_sim/simulate.py) | The 15-minute time loop that ties everything together and records one row per step. |
 | [`reference.py`](../src/corridor_sim/reference.py) | The static-rating run a DLR run is compared against: its settings, fingerprint and lookup for reuse. |
 | [`report.py`](../src/corridor_sim/report.py) | Turns the time series into metrics, the summary CSV of network, cost and check tables, the console summary and the violation table. |
-| [`plots.py`](../src/corridor_sim/plots.py) | Figures for one run (corridor current, current duration, power flow, current along the corridor, voltage, rating drivers, storage) and for the scenario matrix. |
+| [`plots.py`](../src/corridor_sim/plots.py) | Figures for one run (network topology, corridor current, current duration, power flow, current along the corridor, voltage, rating drivers, storage) and for the scenario matrix. |
 
 ## Scripts and data
 
@@ -46,5 +46,6 @@
 | [`test_report.py`](../tests/test_report.py) | Metrics, technical cost, summary tables and text are computed correctly. |
 | [`test_reference.py`](../tests/test_reference.py) | The static reference is found only when settings, window, data and model all match. |
 | [`test_matrix.py`](../tests/test_matrix.py) | The matrix runner collects and tabulates results, and pairs DLR runs with static ones. |
+| [`test_topology.py`](../tests/test_topology.py) | The topology figure shows what the run connects, leaves switched-off plants out, and never lets two markers overlap. |
 | [`test_interactive.py`](../tests/test_interactive.py) | Interactive mode: answers become the right run, unmatched answers are asked again, defaults and cancelling. |
 | [`test_smoke.py`](../tests/test_smoke.py) | Short end-to-end runs: convergence, energy balance, ratings respected, files written, static reference made then reused, added plants and loads. |
