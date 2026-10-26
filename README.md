@@ -21,7 +21,9 @@ Power flow analysis by simulates a period of a 110 kV generation heavy corridor 
 * **Minimal curtailment** wherever DLR cannot help: every plant cut gives up the same
   share of its instantaneous output, and only plants feeding the constraint are cut.
   A large load takes the generation it can use before anything is curtailed.
-* **Battery** (optional) with state of charge and reserve accounting.
+* **Battery** (optional) with state of charge and reserve accounting, at TAP_B or any
+  connection point (`--storage-at`). Before plants are curtailed it holds back
+  discharge and charges with what would be curtailed, as far as its place lets it.
 * **Added plants and large loads** of any size, wind or solar, at five connection
   points along the corridor: SUB_A, midway to SUB_C, SUB_C, midway to the PCC, or the PCC.
 * **Interactive setup**: run `corridor-sim` with no options and it asks for the

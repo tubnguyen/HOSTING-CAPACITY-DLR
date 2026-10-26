@@ -48,3 +48,11 @@ def test_the_figure_is_drawn_for_any_network(cfg, tmp_path):
     path = tmp_path / "topology.png"
     plots.network_topology(cfg, path)
     assert path.stat().st_size > 5000
+
+
+def test_the_battery_is_drawn_where_it_connects():
+    moved = {e["name"]: e for e in plots.topology_elements(
+        build_config("dlr2_der4_bess", storage_at="MID_A_C"))}
+    assert moved["BESS"]["bus"] == "MID_A_C" and moved["BESS"]["added"]
+    shipped = {e["name"]: e for e in plots.topology_elements(build_config("dlr2_der4_bess"))}
+    assert shipped["BESS"]["bus"] == "TAP_B" and not shipped["BESS"]["added"]

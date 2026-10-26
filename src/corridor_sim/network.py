@@ -184,15 +184,17 @@ def build(cfg):
                 **_tap_kwargs(controllable=False))
 
     # ── Storage connection ───────────────────────────────────────────────────
+    # The battery joins its point over the same tie and transformer wherever
+    # it is placed; TAP_B, by the PCC, unless Config.storage_at moves it.
     if cfg.storage_connection == "tie":
-        line("TAP_B", "BESS_HV", C.LEN_LAT_BESS, corr, "LAT_BESS")
+        line(cfg.storage_bus, "BESS_HV", C.LEN_LAT_BESS, corr, "LAT_BESS")
         pp.create_transformer_from_parameters(
             net, hv_bus=b["BESS_HV"], lv_bus=b["BESS_MV"], vn_hv_kv=C.V_HV_KV,
             vn_lv_kv=C.V_COLLECTOR_KV, pfe_kw=0, i0_percent=0, shift_degree=0,
             name="T_BESS", **C.BESS_TRAFO, **_tap_kwargs(controllable=False))
         storage_bus, storage_pcc = b["BESS_MV"], b["BESS_HV"]
     else:
-        storage_bus = storage_pcc = b["TAP_B"]
+        storage_bus = storage_pcc = b[cfg.storage_bus]
 
     # ── Loads ────────────────────────────────────────────────────────────────
     pp.create_load(net, bus=b["SUB_A_MV"], p_mw=0, q_mvar=0, name="LOAD_SUB_A")
@@ -245,4 +247,4 @@ def summary(cfg, net) -> str:
             f"{len(net.sgen)} plants | conductor={cfg.conductor} "
             f"({cfg.bundle_n}x, static {cfg.static_rating_a:.0f} A) | "
             f"DER {cfg.n_der}/{len(cfg.units)} = {cfg.der_fleet_mw:.0f} MW{loads} | "
-            f"storage {'on' if cfg.storage_enabled else 'off'}")
+            f"storage {f'on at {cfg.storage_bus}' if cfg.storage_enabled else 'off'}")

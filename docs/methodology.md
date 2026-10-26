@@ -4,7 +4,7 @@ Quasi-static AC power flow (pandapower, Newton-Raphson) at 15-minute steps. Each
 
 ```
 loads → plant output → battery intent → voltage control → line rating
-      → battery reconciliation → curtailment → state of charge → record
+      → battery reconciliation → battery relief → curtailment → state of charge → record
 ```
 
 ## 1. Line rating
@@ -80,10 +80,24 @@ All four are checked every step.
 
 ## 5. Battery
 
-* Two-phase dispatch: intent before the solve, then clamped to the export headroom.
+* Connects at TAP_B by default, or at any of SUB_A, MID_A_C, SUB_C, MID_C_PCC and
+  the PCC (`--storage-at`), always over the same 1 km tie and 110/33 kV transformer.
+* Three phases: intent before the solve; then clamped to the export headroom; then,
+  before any plant is curtailed, relief.
 * Discharges on the reserve signal; charges from surplus, then the grid.
-* State of charge integrates realised power only; reserve shortfall is counted.
-* Its tap is near the PCC, so it cannot relieve overloads upstream of it.
+* **Relief**: generation has priority, so when the export cap or a corridor segment
+  between the battery and the PCC is overloaded, a discharge is held back first (never
+  turned into a charge), and an idle or charging battery charges with power that would
+  otherwise be curtailed, within its rating and state of charge. It moves only as far
+  as clears what it can reach; what it cannot is curtailment's.
+* **Reach depends on where it is.** Its power flows through every segment between its
+  point and the PCC and none upstream of it: at SUB_A it can absorb congestion anywhere
+  on the corridor, at TAP_B only on the last 1 km and at the export cap, at the PCC
+  only at the export cap. Discharging upstream of a bottleneck adds to it.
+* The export headroom is estimated as one to one from the battery to the PCC; further
+  up the corridor, losses make that slightly conservative.
+* State of charge integrates realised power only; reserve shortfall is counted, and
+  discharge held back for congestion counts toward it.
 
 ## 6. Inputs
 

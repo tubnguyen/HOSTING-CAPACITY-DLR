@@ -152,8 +152,13 @@ CONNECTION_POINT_NAMES = {
     "MID_A_C": "midway from SUB_A to SUB_C",
     "SUB_C": "substation between the two zones",
     "MID_C_PCC": "midway from SUB_C to the PCC",
+    "TAP_B": "battery tap, 1 km before the PCC",
     "PCC": "grid interface",
 }
+# Where the battery may connect: the five points, and TAP_B where it is built
+# by default. Wherever it is, it joins over the same 1 km tie and transformer.
+STORAGE_POINTS = ("SUB_A", "MID_A_C", "SUB_C", "MID_C_PCC", "TAP_B", "PCC")
+STORAGE_DEFAULT_POINT = "TAP_B"
 
 # The corridor bus each built-in plant joins, directly or over its lateral.
 DER_JOIN_BUS = {"WF_1": "TAP_W", "WF_2": "TAP_W", "WF_3": "SUB_A", "PV_1": "TAP_PV"}
