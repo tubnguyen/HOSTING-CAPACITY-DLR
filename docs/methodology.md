@@ -112,9 +112,9 @@ connection points; see [network.md](network.md#connection-points).
 ## 7. Reported currents and cost
 
 * **Current from all plants:** the highest corridor segment current with every
-  connected plant at full available output, read before curtailment. **Current
-  after curtailment:** the same once curtailment has brought it onto the operative
-  rating. The difference between them is the curtailment, so the exceedance below
+  connected plant at full available output, read before curtailment.
+* **Current after curtailment:** the same once curtailment has brought it onto the
+  operative rating. The difference between them is the curtailment, so the exceedance below
   is enough to size it.
 * **Time above a limit:** how long the current from all plants exceeds 780 A (a
   statically rated single conductor would be overloaded), the operative rating (this
