@@ -87,31 +87,14 @@ corridor.
 | Reactive | cos φ 0.95 range, the same droop or cos φ control as the built-in plants (solar follows the solar setting), measured at its point | fixed by its power factor |
 | Curtailment | yes, see below | never |
 
-The upper bound is a guard against a mistyped number, not a network limit. The
-corridor is long and weak for demand at its far end: with no generation, a 100 MW
-load at SUB_A leaves the busbar near 0.86 pu, and somewhere between 130 and 140 MW
-the power flow has no solution at all. Steps beyond what the network can supply do
-not converge, and are counted as such.
-
-**Where it connects decides what it is curtailed for.** Curtailment is proportional
-to instantaneous output: every plant cut in a step gives up the same share of what it
-is producing. A plant is only in that share for a corridor overload if its power
-flows through the overloaded segment, that is if it joins at or upstream of the
-segment's head-side end; a plant at the PCC is not. When the export cap, an
-over-voltage or a transformer overload binds in the same step, every plant shares
-the cut.
+Curtailment is proportionalto instantaneous output
 
 **A large load absorbs generation before anything is cut.** The cut is searched on
 the solved network, so power a load draws between the plants and the bottleneck
-never reaches the bottleneck: a 60 MW load at MID_A_C takes about 60 MW off the
-curtailment a TAP_W → SUB_C overload needs, and a load large enough to use the whole
-excess leaves nothing to cut. A load beyond the bottleneck (at the PCC, say) relieves
-the export cap but not the corridor. A segment overloaded by power drawn back toward
-the head, to supply a large load up the corridor, is recorded but not curtailed for:
-cutting generation would only deepen it.
+never reaches the bottleneck.
 
-Added plants also widen the reactive exchange window at the PCC, which is set by the
-installed fleet: 10 % of 330 MW plus what was added, at most 50 MVAr.
+Added plants also widen the reactive exchange window at the PCC: 10 % of 330 MW plus 
+what was added, at most 50 MVAr.
 
 ## Corridor conductor (Al/St 340/30)
 
