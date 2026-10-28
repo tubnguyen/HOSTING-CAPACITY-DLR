@@ -82,9 +82,14 @@ All four are checked every step.
 
 * Connects at TAP_B by default, or at any of SUB_A, MID_A_C, SUB_C, MID_C_PCC and
   the PCC (`--storage-at`), always over the same 1 km tie and 110/33 kV transformer.
-* Three phases: intent before the solve; then clamped to the export headroom; then,
-  before any plant is curtailed, relief.
+* Upward reserve product, similar to mFRR
+* Three phases: to charge or discharge; check export cap; before curtailment, absorb extra
+  power from plants.
 * Discharges on the reserve signal; charges from surplus, then the grid.
+* Rating and connection: 30 MW / 60 MWh, with 88 % round-trip efficiency (about 93.8 % each way),
+  a 10–95 % state-of-charge window and a ±9.9 MVAr reactive range (cos φ 0.95)
+* **Discharges** at up to the contracted 30 MW when the upward balancing signal exceeds 1 MW and its state of charge is above the 20 %.
+* **Charges** first from surplus generation above the export cap, then from the grid, until it holds enough to deliver the contracted reserve for one hour.
 * **Relief**: generation has priority, so when the export cap or a corridor segment
   between the battery and the PCC is overloaded, a discharge is held back first (never
   turned into a charge), and an idle or charging battery charges with power that would
